@@ -261,23 +261,24 @@ Important:
 - `PUBLIC_BASE_URL` must point to the public `Koyeb1` URL so LINE can load the generated image
 - if `PUBLIC_BASE_URL` is missing, schedule-card sending will fail
 
-## Deploy To Koyeb
+## Deploy To Railway
 
 Recommended path:
 
 1. push this repo to GitHub
-2. create a new Koyeb App from GitHub
+2. create a new Railway project from GitHub
 3. choose Dockerfile deployment
 4. set the service port to `8001`
 5. add all required env vars
 6. deploy
+7. copy the public Railway URL
 
 ### Simple Answer
 
 For `Koyeb1`, you only need:
 
 1. GitHub repo
-2. Koyeb service
+2. Railway service
 3. Supabase project
 4. LINE webhook configuration
 
@@ -285,23 +286,23 @@ You do not need Vercel unless you also want a separate frontend.
 
 ### What To Create
 
-- Koyeb App:
+- Railway Project:
   `koyeb1-acdc-core`
-- Koyeb Service Type:
-  Dockerfile / Web Service
+- Railway Service Type:
+  Dockerfile service
 - Supabase Project:
   your chosen real project for logical `Supabase1`
 - LINE Webhook:
-  points to `https://your-koyeb1-service.koyeb.app/webhooks/line`
+  points to `https://your-railway-service.up.railway.app/webhooks/line`
 
 ### Setup Order
 
 1. create or choose `Supabase1`
 2. run `supabase/SQLEditor.sql`
-3. create Koyeb app from this GitHub repo
-4. set all environment variables in Koyeb
-5. deploy the Koyeb service
-6. copy the public Koyeb URL
+3. create Railway project from this GitHub repo
+4. set all environment variables in Railway
+5. deploy the Railway service
+6. copy the public Railway URL
 7. configure LINE webhook URL
 8. test `/health`
 9. test LINE messaging
@@ -346,6 +347,12 @@ EVENING_SUMMARY_CRON=0 18 * * *
 EVENT_ALERT_CRON=*/5 * * * *
 ```
 
+For Railway, change:
+
+```env
+PUBLIC_BASE_URL=https://your-railway-service.up.railway.app
+```
+
 ## LINE Webhook Setup
 
 After deployment:
@@ -354,7 +361,7 @@ After deployment:
 2. set LINE webhook URL to:
 
 ```text
-https://your-koyeb1-service.koyeb.app/webhooks/line
+https://your-railway-service.up.railway.app/webhooks/line
 ```
 
 3. enable webhook delivery in LINE Developers Console
@@ -418,7 +425,7 @@ Note:
 
 - add richer Thai natural-language parsing for calendar actions
 - add more complete old-system file workflow parity
-- create a real deploy pass on Koyeb with `Supabase1` and LINE webhook verification
+- create a real deploy pass on Railway with `Supabase1` and LINE webhook verification
 
 ## Deployment Plan (TH)
 
@@ -438,7 +445,7 @@ Note:
 
 ### วิธี deploy Koyeb1
 
-1. เปิด Koyeb แล้วสร้าง `Web Service`
+1. เปิด Railway แล้วสร้าง `Project`
 2. เลือก deploy จาก GitHub
 3. เลือก repo `Koyeb1-ACDC-Core`
 4. เลือก branch `main`
@@ -455,7 +462,7 @@ Note:
 - `KOYEB0_BASE_URL=...`
 - `KOYEB0_INTERNAL_API_KEY=...`
 - `KOYEB0_DEFAULT_POLICY=private_first`
-- `PUBLIC_BASE_URL=https://your-koyeb1-service.koyeb.app`
+- `PUBLIC_BASE_URL=https://your-railway-service.up.railway.app`
 8. ถ้าจะใช้ LINE ให้เพิ่ม:
 - `LINE_CHANNEL_ACCESS_TOKEN=...`
 - `LINE_CHANNEL_SECRET=...`
