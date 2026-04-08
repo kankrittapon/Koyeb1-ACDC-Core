@@ -419,3 +419,62 @@ Note:
 - add richer Thai natural-language parsing for calendar actions
 - add more complete old-system file workflow parity
 - create a real deploy pass on Koyeb with `Supabase1` and LINE webhook verification
+
+## Deployment Plan (TH)
+
+### ถ้า Koyeb ของคุณยังไม่มีแผนฟรี
+
+- ให้ถือว่า `Koyeb1` พร้อมในระดับ code แล้ว
+- ยังไม่ต้องย้ายไป Vercel เพราะ repo นี้เป็น backend
+- ให้เก็บ env, LINE secret, และ Google Drive secret ให้ครบก่อน
+
+### Koyeb1 เราจะใช้ทำอะไร
+
+- เป็น backend หลักของ ACDC
+- รับ `LINE webhook`
+- จัดการ `users`, `events`, `prompts`, `logs`
+- เรียก AI ผ่าน `Koyeb0`
+- จัดการ scheduler, file upload, และ schedule card
+
+### วิธี deploy Koyeb1
+
+1. เปิด Koyeb แล้วสร้าง `Web Service`
+2. เลือก deploy จาก GitHub
+3. เลือก repo `Koyeb1-ACDC-Core`
+4. เลือก branch `main`
+5. เลือก build แบบ `Dockerfile`
+6. ตั้ง `Port` เป็น `8001`
+7. ใส่ environment variables หลัก:
+- `PORT=8001`
+- `NODE_ENV=production`
+- `APP_TIMEZONE=Asia/Bangkok`
+- `INTERNAL_API_KEY=...`
+- `JWT_SECRET=...`
+- `SUPABASE_URL=...`
+- `SUPABASE_SERVICE_ROLE_KEY=...`
+- `KOYEB0_BASE_URL=...`
+- `KOYEB0_INTERNAL_API_KEY=...`
+- `KOYEB0_DEFAULT_POLICY=private_first`
+- `PUBLIC_BASE_URL=https://your-koyeb1-service.koyeb.app`
+8. ถ้าจะใช้ LINE ให้เพิ่ม:
+- `LINE_CHANNEL_ACCESS_TOKEN=...`
+- `LINE_CHANNEL_SECRET=...`
+9. ถ้าจะใช้ Google Drive ให้เพิ่ม:
+- `GOOGLE_DRIVE_CLIENT_ID=...`
+- `GOOGLE_DRIVE_CLIENT_SECRET=...`
+- `GOOGLE_DRIVE_REFRESH_TOKEN=...`
+- `GOOGLE_DRIVE_ROOT_FOLDER=...`
+10. กด deploy
+11. หลัง deploy ให้ทดสอบ:
+- `GET /health`
+- `POST /api/auth/login`
+- `POST /webhooks/line`
+- การเชื่อมต่อไป `Koyeb0`
+
+### สิ่งที่ต้องสำเร็จหลัง deploy
+
+- service รันได้
+- ต่อ `Supabase1` ได้
+- เรียก `Koyeb0` ได้
+- พร้อมเชื่อม LINE webhook
+- พร้อมใช้เป็น backend หลักของ ACDC
