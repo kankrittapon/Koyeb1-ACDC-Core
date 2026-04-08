@@ -89,6 +89,24 @@ Still to expand later:
 - `Vercel`
   Next.js admin frontend if you keep it separate
 
+## Do I Need Vercel For Koyeb1?
+
+No. `Koyeb1` itself does not need Vercel.
+
+Use this split:
+
+- `Koyeb1` on Koyeb
+  backend API, LINE webhook, jobs, business logic
+- `Supabase1` on Supabase
+  database and operational data
+- `Vercel` only if you want a separate Next.js frontend or admin dashboard
+
+That means:
+
+- if you are only deploying the backend service, deploy `Koyeb1` on Koyeb only
+- do not deploy `Koyeb1` to Vercel
+- use Vercel only for a web UI such as an admin panel
+
 ## API Surface
 
 - `GET /`
@@ -253,6 +271,53 @@ Recommended path:
 4. set the service port to `8001`
 5. add all required env vars
 6. deploy
+
+### Simple Answer
+
+For `Koyeb1`, you only need:
+
+1. GitHub repo
+2. Koyeb service
+3. Supabase project
+4. LINE webhook configuration
+
+You do not need Vercel unless you also want a separate frontend.
+
+### What To Create
+
+- Koyeb App:
+  `koyeb1-acdc-core`
+- Koyeb Service Type:
+  Dockerfile / Web Service
+- Supabase Project:
+  your chosen real project for logical `Supabase1`
+- LINE Webhook:
+  points to `https://your-koyeb1-service.koyeb.app/webhooks/line`
+
+### Setup Order
+
+1. create or choose `Supabase1`
+2. run `supabase/SQLEditor.sql`
+3. create Koyeb app from this GitHub repo
+4. set all environment variables in Koyeb
+5. deploy the Koyeb service
+6. copy the public Koyeb URL
+7. configure LINE webhook URL
+8. test `/health`
+9. test LINE messaging
+
+### If You Also Want A Frontend
+
+Only in that case:
+
+- deploy frontend on Vercel
+- keep backend on Koyeb
+- let the frontend call `Koyeb1`
+
+Recommended split:
+
+- `Koyeb1` = backend only
+- `Vercel` = frontend only
 
 Minimum production env recommendation:
 
