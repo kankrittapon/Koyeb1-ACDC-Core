@@ -1,0 +1,662 @@
+import { Client, middleware, MiddlewareConfig, WebhookEvent } from "@line/bot-sdk";
+import { config } from "../../config";
+import { supabaseAdmin } from "../../lib/supabase";
+import { requestGatewayChat } from "../ai-gateway/client";
+import { uploadFileToDrive } from "../drive/service";
+import { generateScheduleCard } from "../cards/service";
+
+const lineConfig: MiddlewareConfig = {
+  channelSecret: config.LINE_CHANNEL_SECRET ?? ""
+};
+
+export const lineMiddleware = middleware(lineConfig);
+
+const lineClient = new Client({
+  channelAccessToken: config.LINE_CHANNEL_ACCESS_TOKEN ?? "",
+  channelSecret: config.LINE_CHANNEL_SECRET ?? ""
+});
+
+const researchKeywords = [
+  "ค้นหา",
+  "วิจัย",
+  "ข่าว",
+  "ข้อมูล",
+  "search",
+  "research",
+  "หาข้อมูล",
+  "คืออะไร",
+  "ทำไม",
+  "ค้นคว้า"
+];
+
+const fileContextCache = new Map<
+  string,
+  { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
+>();
+
+function isResearchRequest(text: string): boolean {
+  return researchKeywords.some((keyword) => text.includes(keyword));
+}
+
+function normalizeTextCommand(text: string): string {
+  const trimmed = text.trim();
+
+  if (
+    trimmed === "ตารางวันนี้" ||
+    trimmed === "ดูตารางวันนี้" ||
+    trimmed === "งานวันนี้" ||
+    trimmed === "สรุปงานวันนี้"
+  ) {
+    return "/event today";
+  }
+
+  if (
+    trimmed === "ขอการ์ดวันนี้" ||
+    trimmed === "ขอการ์ดตารางวันนี้" ||
+    trimmed === "ขอสรุปงานแบบรูป" ||
+    trimmed === "ขอ qr" ||
+    trimmed === "ขอ QR"
+  ) {
+    return "/card today";
+  }
+
+  const staffNaturalMatch = trimmed.match(/^ส่งข้อความให้\s+(.+?)\s+ว่า\s+(.+)$/i);
+  if (staffNaturalMatch) {
+    return `/staff send | ${staffNaturalMatch[1].trim()} | ${staffNaturalMatch[2].trim()}`;
+  }
+
+  const deleteNaturalMatch = trimmed.match(/^ลบกิจกรรม\s+(.+)$/i);
+  if (deleteNaturalMatch) {
+    return `/event delete | ${deleteNaturalMatch[1].trim()}`;
+  }
+
+  const addNaturalMatch = trimmed.match(
+    /^เพิ่มกิจกรรม\s+(.+?)\s+เริ่ม\s+(.+?)\s+จบ\s+(.+?)(?:\s+สถานที่\s+(.+))?$/i
+  );
+  if (addNaturalMatch) {
+    const title = addNaturalMatch[1].trim();
+    const start = addNaturalMatch[2].trim();
+    const end = addNaturalMatch[3].trim();
+    const location = addNaturalMatch[4]?.trim();
+    return `/event add | ${title} | ${start} | ${end} | INTERNAL | ${location ?? ""}`;
+  }
+
+  return trimmed;
+}
+
+async function logWebhookEvent(event: WebhookEvent, status: string): Promise<void> {
+  await supabaseAdmin.from("webhook_logs").insert({
+    provider: "line",
+    event_type: event.type,
+    line_user_id: event.source.userId ?? null,
+    request_id: "line_webhook",
+    payload: event,
+    status
+  });
+}
+
+async function ensureLineUser(lineUserId: string) {
+  const profile = await lineClient.getProfile(lineUserId);
+
+  const { data: existingUser, error: fetchError } = await supabaseAdmin
+    .from("users")
+    .select("*")
+    .eq("line_user_id", lineUserId)
+    .maybeSingle();
+
+  if (fetchError) {
+    throw fetchError;
+  }
+
+  if (!existingUser) {
+    const { data: createdUser, error: createError } = await supabaseAdmin
+      .from("users")
+      .insert({
+        line_user_id: lineUserId,
+        line_display_name: profile.displayName,
+        picture_url: profile.pictureUrl ?? null,
+        role: "GUEST"
+      })
+      .select("*")
+      .single();
+
+    if (createError) {
+      throw createError;
+    }
+
+    return createdUser;
+  }
+
+  const { data: updatedUser, error: updateError } = await supabaseAdmin
+    .from("users")
+    .update({
+      line_display_name: profile.displayName,
+      picture_url: profile.pictureUrl ?? null,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", existingUser.id)
+    .select("*")
+    .single();
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  return updatedUser;
+}
+
+async function logConversation(lineUserId: string, userId: string | null, message: string, botResponse: string) {
+  await supabaseAdmin.from("conversation_logs").insert({
+    user_id: userId,
+    line_user_id: lineUserId,
+    message,
+    bot_response: botResponse,
+    source: "line"
+  });
+}
+
+function getDriveFolderId(role: string, mimeType: string): string | undefined {
+  const normalizedRole = role.toUpperCase();
+
+  const roleRootMap: Record<string, string | undefined> = {
+    BOSS: config.GOOGLE_DRIVE_BOSS_ROOT_FOLDER,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_ROOT_FOLDER,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_ROOT_FOLDER,
+    USER: config.GOOGLE_DRIVE_USER_ROOT_FOLDER,
+    GUEST: config.GOOGLE_DRIVE_GUEST_ROOT_FOLDER
+  };
+
+  const roleImageMap: Record<string, string | undefined> = {
+    BOSS: config.GOOGLE_DRIVE_BOSS_IMAGE_FOLDER,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_IMAGE_FOLDER,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_IMAGE_FOLDER,
+    USER: config.GOOGLE_DRIVE_USER_IMAGE_FOLDER,
+    GUEST: config.GOOGLE_DRIVE_GUEST_IMAGE_FOLDER
+  };
+
+  const roleFileMap: Record<string, string | undefined> = {
+    BOSS: config.GOOGLE_DRIVE_BOSS_FILE_FOLDER,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_FILE_FOLDER,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_FILE_FOLDER,
+    USER: config.GOOGLE_DRIVE_USER_FILE_FOLDER,
+    GUEST: config.GOOGLE_DRIVE_GUEST_FILE_FOLDER
+  };
+
+  if (mimeType.startsWith("image/")) {
+    return (
+      roleImageMap[normalizedRole] ??
+      config.GOOGLE_DRIVE_IMAGE_FOLDER ??
+      roleRootMap[normalizedRole] ??
+      config.GOOGLE_DRIVE_ROOT_FOLDER
+    );
+  }
+
+  return (
+    roleFileMap[normalizedRole] ??
+    config.GOOGLE_DRIVE_FILE_FOLDER ??
+    roleRootMap[normalizedRole] ??
+    config.GOOGLE_DRIVE_ROOT_FOLDER
+  );
+}
+
+export async function pushTextMessage(lineUserId: string, text: string): Promise<void> {
+  await lineClient.pushMessage(lineUserId, {
+    type: "text",
+    text
+  });
+}
+
+async function replyText(replyToken: string, text: string): Promise<void> {
+  await lineClient.replyMessage(replyToken, {
+    type: "text",
+    text
+  });
+}
+
+function buildRoleContext(user: {
+  role: string;
+  nickname?: string | null;
+  line_display_name?: string | null;
+}) {
+  return [
+    "You are the ACDC Core assistant for internal staff operations.",
+    `Current role: ${user.role}`,
+    `Nickname: ${user.nickname ?? "-"}`,
+    `LINE display name: ${user.line_display_name ?? "-"}`,
+    "Respect role boundaries. Do not claim a calendar action has been completed unless the Koyeb1 backend actually performed it.",
+    "If the request is informational, answer directly and clearly in Thai."
+  ].join("\n");
+}
+
+async function findStaffUser(target: string) {
+  const normalizedRole = target.toUpperCase();
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select("id, username, role, line_user_id, line_display_name, nickname")
+    .or(
+      `nickname.ilike.%${target}%,line_display_name.ilike.%${target}%,username.ilike.%${target}%,role.eq.${normalizedRole}`
+    )
+    .limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.[0] ?? null;
+}
+
+async function sendStaffMessage(input: {
+  senderUserId: string | null;
+  senderRole: string;
+  target: string;
+  message: string;
+  includeCachedFile?: boolean;
+  lineUserId: string;
+}) {
+  const targetUser = await findStaffUser(input.target);
+  if (!targetUser || !targetUser.line_user_id) {
+    return `⚠️ ไม่พบบุคคลที่สามารถรับข้อความได้จากคำว่า "${input.target}"`;
+  }
+
+  const cachedFile = input.includeCachedFile ? fileContextCache.get(input.lineUserId) : null;
+  let fullMessage = `📨 ข้อความจาก ${input.senderRole}\n\n${input.message}`;
+
+  if (cachedFile) {
+    fullMessage += `\n\n📎 ไฟล์แนบ: ${cachedFile.fileUrl}`;
+  }
+
+  await pushTextMessage(targetUser.line_user_id, fullMessage);
+
+  await supabaseAdmin.from("staff_messages").insert({
+    sender_user_id: input.senderUserId,
+    target_user_id: targetUser.id,
+    target_line_user_id: targetUser.line_user_id,
+    message: input.message,
+    file_url: cachedFile?.fileUrl ?? null,
+    status: "sent",
+    sent_at: new Date().toISOString()
+  });
+
+  return `✅ ส่งข้อความถึง ${targetUser.nickname ?? targetUser.line_display_name ?? targetUser.username ?? input.target} เรียบร้อยแล้ว`;
+}
+
+async function createCalendarEventFromCommand(input: {
+  title: string;
+  startAt: string;
+  endAt: string;
+  locationType?: string;
+  locationDisplayName?: string;
+  createdBy: string;
+}) {
+  const { data, error } = await supabaseAdmin
+    .from("calendar_events")
+    .insert({
+      title: input.title,
+      start_at: input.startAt,
+      end_at: input.endAt,
+      location_type: input.locationType ?? "INTERNAL",
+      location_display_name: input.locationDisplayName ?? null,
+      created_by: input.createdBy
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return `✅ บันทึกกิจกรรม "${data.title}" เรียบร้อยแล้ว`;
+}
+
+async function deleteCalendarEventByKeyword(keyword: string) {
+  const { data: events, error } = await supabaseAdmin
+    .from("calendar_events")
+    .select("*")
+    .ilike("title", `%${keyword}%`)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  const event = events?.[0];
+  if (!event) {
+    return `⚠️ ไม่พบกิจกรรมที่ตรงกับ "${keyword}"`;
+  }
+
+  const { error: deleteError } = await supabaseAdmin
+    .from("calendar_events")
+    .delete()
+    .eq("id", event.id);
+
+  if (deleteError) {
+    throw deleteError;
+  }
+
+  return `🗑️ ลบกิจกรรม "${event.title}" เรียบร้อยแล้ว`;
+}
+
+async function getTodayScheduleText() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+
+  const { data, error } = await supabaseAdmin
+    .from("calendar_events")
+    .select("*")
+    .gte("start_at", start.toISOString())
+    .lte("start_at", end.toISOString())
+    .order("start_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length === 0) {
+    return "📅 วันนี้ไม่มีตารางงานครับ";
+  }
+
+  const lines = data.map((event, index) => {
+    const time = new Date(event.start_at).toLocaleTimeString("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: config.APP_TIMEZONE
+    });
+    return `${index + 1}. ${time} - ${event.title}`;
+  });
+
+  return `📅 ตารางงานวันนี้\n\n${lines.join("\n")}`;
+}
+
+async function createScheduleCard(lineUserId: string, requestedByUserId: string | null) {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+
+  const { data, error } = await supabaseAdmin
+    .from("calendar_events")
+    .select("*")
+    .gte("start_at", start.toISOString())
+    .lte("start_at", end.toISOString())
+    .order("start_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  const dateLabel = new Intl.DateTimeFormat("th-TH", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: config.APP_TIMEZONE
+  }).format(start);
+
+  const qrUrl = config.DASHBOARD_CARD_URL ?? config.NEXTJS_FRONTEND_URL ?? "https://example.com";
+  const card = await generateScheduleCard({
+    dateLabel,
+    qrUrl,
+    events:
+      data?.map((event) => ({
+        start: new Date(event.start_at).toLocaleTimeString("th-TH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+          timeZone: config.APP_TIMEZONE
+        }),
+        end: new Date(event.end_at).toLocaleTimeString("th-TH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+          timeZone: config.APP_TIMEZONE
+        }),
+        title: event.title,
+        location: event.location_display_name ?? "",
+        description: event.description ?? ""
+      })) ?? []
+  });
+
+  const imageUrl = `${config.PUBLIC_BASE_URL ?? ""}${card.publicPath}`;
+  if (!config.PUBLIC_BASE_URL) {
+    throw new Error("PUBLIC_BASE_URL is required to send schedule card images");
+  }
+
+  await lineClient.pushMessage(lineUserId, {
+    type: "image",
+    originalContentUrl: imageUrl,
+    previewImageUrl: imageUrl
+  });
+
+  await supabaseAdmin.from("generated_cards").insert({
+    requested_by_user_id: requestedByUserId,
+    target_date: start.toISOString().slice(0, 10),
+    image_url: imageUrl,
+    status: "completed",
+    completed_at: new Date().toISOString()
+  });
+
+  return "✅ สร้างและส่งการ์ดตารางงานประจำวันเรียบร้อยแล้ว";
+}
+
+async function tryHandleCommand(input: {
+  text: string;
+  user: {
+    id: string | null;
+    role: string;
+  };
+  lineUserId: string;
+}): Promise<string | null> {
+  const trimmed = normalizeTextCommand(input.text);
+
+  if (trimmed === "/event today") {
+    return getTodayScheduleText();
+  }
+
+  if (trimmed === "/card today") {
+    return createScheduleCard(input.lineUserId, input.user.id);
+  }
+
+  const addMatch = trimmed.match(
+    /^\/event add\s*\|\s*(.+?)\s*\|\s*([^|]+)\s*\|\s*([^|]+)(?:\|\s*([^|]+))?(?:\|\s*(.+))?$/i
+  );
+  if (addMatch) {
+    return createCalendarEventFromCommand({
+      title: addMatch[1].trim(),
+      startAt: new Date(addMatch[2].trim()).toISOString(),
+      endAt: new Date(addMatch[3].trim()).toISOString(),
+      locationType: addMatch[4]?.trim() ?? "INTERNAL",
+      locationDisplayName: addMatch[5]?.trim() ?? null,
+      createdBy: "line_command"
+    });
+  }
+
+  const deleteMatch = trimmed.match(/^\/event delete\s*\|\s*(.+)$/i);
+  if (deleteMatch) {
+    return deleteCalendarEventByKeyword(deleteMatch[1].trim());
+  }
+
+  const staffMatch = trimmed.match(/^\/staff send\s*\|\s*([^|]+)\|\s*(.+)$/i);
+  if (staffMatch) {
+    return sendStaffMessage({
+      senderUserId: input.user.id,
+      senderRole: input.user.role,
+      target: staffMatch[1].trim(),
+      message: staffMatch[2].trim(),
+      lineUserId: input.lineUserId
+    });
+  }
+
+  const staffFileMatch = trimmed.match(/^ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i);
+  if (staffFileMatch && fileContextCache.has(input.lineUserId)) {
+    return sendStaffMessage({
+      senderUserId: input.user.id,
+      senderRole: input.user.role,
+      target: staffFileMatch[1].trim(),
+      message: staffFileMatch[2].trim(),
+      includeCachedFile: true,
+      lineUserId: input.lineUserId
+    });
+  }
+
+  return null;
+}
+
+async function handleBinaryUpload(
+  event: WebhookEvent & { type: "message"; message: { id: string; type: "image" | "file"; fileName?: string } },
+  user: { id: string | null; role: string },
+  lineUserId: string
+) {
+  const fileStream = await lineClient.getMessageContent(event.message.id);
+  const isImage = event.message.type === "image";
+  const fileName = isImage
+    ? `upload_${Date.now()}.jpg`
+    : event.message.fileName ?? `file_${Date.now()}`;
+  const mimeType = isImage ? "image/jpeg" : "application/octet-stream";
+
+  const driveResult = await uploadFileToDrive({
+    fileName,
+    mimeType,
+    fileStream,
+    folderId: getDriveFolderId(user.role, mimeType)
+  });
+
+  fileContextCache.set(lineUserId, {
+    fileName,
+    fileUrl: driveResult.webViewLink ?? "",
+    mimeType,
+    timestamp: Date.now()
+  });
+
+  await supabaseAdmin.from("uploaded_files").insert({
+    user_id: user.id,
+    line_user_id: lineUserId,
+    file_name: fileName,
+    mime_type: mimeType,
+    drive_file_id: driveResult.id,
+    drive_url: driveResult.webViewLink
+  });
+
+  const response = isImage
+    ? `✅ บันทึกรูปภาพลง Google Drive เรียบร้อยครับ\n\n📎 Link: ${driveResult.webViewLink}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`
+    : `✅ บันทึกไฟล์ "${fileName}" ลง Google Drive เรียบร้อยครับ\n\n📎 Link: ${driveResult.webViewLink}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`;
+
+  await replyText(event.replyToken, response);
+}
+
+async function handleTextMessage(event: WebhookEvent & { type: "message"; message: { type: "text"; text: string } }) {
+  const lineUserId = event.source.userId;
+  if (!lineUserId) {
+    return;
+  }
+
+  const user = await ensureLineUser(lineUserId);
+  const text = event.message.text;
+
+  if (user.role === "GUEST") {
+    const guestMessage =
+      "⚠️ ขออภัยครับ ระบบยังไม่รู้จักคุณในฐานะพนักงาน กรุณาให้ Admin กำหนดสิทธิ์ให้ในระบบก่อนครับ";
+    await logConversation(lineUserId, user.id, text, guestMessage);
+    await replyText(event.replyToken, guestMessage);
+    return;
+  }
+
+  const commandResult = await tryHandleCommand({
+    text,
+    user: {
+      id: user.id,
+      role: user.role
+    },
+    lineUserId
+  });
+
+  if (commandResult) {
+    await logConversation(lineUserId, user.id, text, commandResult);
+    await replyText(event.replyToken, commandResult);
+    return;
+  }
+
+  if ((user.role === "BOSS" || user.role === "ADMIN") && isResearchRequest(text)) {
+    await replyText(
+      event.replyToken,
+      "🔎 รับทราบครับ กำลังค้นข้อมูลและสรุปผลให้ โปรดรอสักครู่ครับ"
+    );
+
+    setImmediate(async () => {
+      try {
+        const result = await requestGatewayChat({
+          prompt: text,
+          policy: "private_first",
+          context: `${buildRoleContext(user)}\nResearch mode is active.`,
+          metadata: {
+            source: "line_async_research",
+            lineUserId,
+            role: user.role
+          }
+        });
+
+        const answer = result.text || "ไม่พบคำตอบที่เหมาะสมในขณะนี้ครับ";
+        await pushTextMessage(lineUserId, answer);
+        await logConversation(lineUserId, user.id, text, answer);
+      } catch (error) {
+        console.error("[Koyeb1] async LINE research failed:", error);
+        await pushTextMessage(
+          lineUserId,
+          "❌ เกิดข้อผิดพลาดระหว่างการค้นข้อมูลครับ ลองใหม่อีกครั้งได้เลย"
+        );
+      }
+    });
+
+    return;
+  }
+
+  const result = await requestGatewayChat({
+    prompt: text,
+    policy: config.KOYEB0_DEFAULT_POLICY,
+    context: buildRoleContext(user),
+    metadata: {
+      source: "line_chat",
+      lineUserId,
+      role: user.role
+    }
+  });
+
+  const answer = result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถตอบได้";
+  await logConversation(lineUserId, user.id, text, answer);
+  await replyText(event.replyToken, answer);
+}
+
+export async function handleLineEvent(event: WebhookEvent): Promise<void> {
+  await logWebhookEvent(event, "received");
+
+  if (event.type === "message" && event.message.type === "text") {
+    await handleTextMessage(event as WebhookEvent & { type: "message"; message: { type: "text"; text: string } });
+    await logWebhookEvent(event, "processed");
+    return;
+  }
+
+  if (
+    event.type === "message" &&
+    (event.message.type === "image" || event.message.type === "file") &&
+    event.source.userId
+  ) {
+    const user = await ensureLineUser(event.source.userId);
+    await handleBinaryUpload(
+      event as WebhookEvent & { type: "message"; message: { id: string; type: "image" | "file"; fileName?: string } },
+      { id: user.id, role: user.role },
+      event.source.userId
+    );
+    await logWebhookEvent(event, "processed");
+    return;
+  }
+
+  if (event.type === "follow" && event.source.userId) {
+    await ensureLineUser(event.source.userId);
+    await logWebhookEvent(event, "processed");
+    return;
+  }
+
+  await logWebhookEvent(event, "ignored");
+}
