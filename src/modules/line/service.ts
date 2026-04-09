@@ -36,6 +36,10 @@ const researchKeywords = [
   "ค้นคว้า"
 ];
 
+const calendarManagerRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
+const summaryRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
+const staffMessagingRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
+
 const fileContextCache = new Map<
   string,
   { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
@@ -53,16 +57,209 @@ function isResearchRequest(text: string): boolean {
   return researchKeywords.some((keyword) => text.includes(keyword));
 }
 
+function canManageCalendar(role: string): boolean {
+  return calendarManagerRoles.has(role.toUpperCase());
+}
+
+function canRequestSummary(role: string): boolean {
+  return summaryRoles.has(role.toUpperCase());
+}
+
+function canMessageStaff(role: string): boolean {
+  return staffMessagingRoles.has(role.toUpperCase());
+}
+
+function parseDateInput(input: string, endOfDay = false): Date | null {
+  const trimmed = input.trim();
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day), endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const slashMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const [, day, month, year] = slashMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day), endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  if (endOfDay) {
+    parsed.setHours(23, 59, 59, 999);
+  }
+
+  return parsed;
+}
+
+function parseDateTimeInput(input: string): Date | null {
+  const trimmed = input.trim();
+  const localMatch = trimmed.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second] = localMatch;
+    const date = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second ?? "0"),
+      0
+    );
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatThaiDate(date: Date): string {
+  return date.toLocaleDateString("th-TH", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: config.APP_TIMEZONE
+  });
+}
+
+function getRangeFromPreset(preset: "today" | "week" | "month") {
+  const now = new Date();
+
+  if (preset === "today") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(now);
+    end.setHours(23, 59, 59, 999);
+    return {
+      start,
+      end,
+      label: `ประจำวัน ${formatThaiDate(start)}`,
+      title: "ตารางงานวันนี้"
+    };
+  }
+
+  if (preset === "week") {
+    const start = new Date(now);
+    const day = start.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    start.setDate(start.getDate() + diff);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    return {
+      start,
+      end,
+      label: `${formatThaiDate(start)} - ${formatThaiDate(end)}`,
+      title: "ตารางงานสัปดาห์นี้"
+    };
+  }
+
+  const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  return {
+    start,
+    end,
+    label: `${formatThaiDate(start)} - ${formatThaiDate(end)}`,
+    title: "ตารางงานเดือนนี้"
+  };
+}
+
+type CalendarEventRow = {
+  id: string;
+  title: string;
+  description?: string | null;
+  start_at: string;
+  end_at: string;
+  location_display_name?: string | null;
+  location_type?: string | null;
+  created_at?: string | null;
+};
+
+async function getEventsBetween(start: Date, end: Date) {
+  const { data, error } = await supabaseAdmin
+    .from("calendar_events")
+    .select("*")
+    .gte("start_at", start.toISOString())
+    .lte("start_at", end.toISOString())
+    .order("start_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []) as CalendarEventRow[];
+}
+
+function buildEventLines(events: CalendarEventRow[]): string[] {
+  return events.map((event, index) => {
+    const start = new Date(event.start_at);
+    const end = new Date(event.end_at);
+    const day = start.toLocaleDateString("th-TH", {
+      day: "numeric",
+      month: "short",
+      timeZone: config.APP_TIMEZONE
+    });
+    const startTime = start.toLocaleTimeString("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: config.APP_TIMEZONE
+    });
+    const endTime = end.toLocaleTimeString("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: config.APP_TIMEZONE
+    });
+    const location = event.location_display_name ? ` • ${event.location_display_name}` : "";
+    return `${index + 1}. ${day} ${startTime}-${endTime} • ${event.title}${location}`;
+  });
+}
+
 function normalizeTextCommand(text: string): string {
   const trimmed = text.trim();
 
   if (
     trimmed === "ตารางวันนี้" ||
     trimmed === "ดูตารางวันนี้" ||
-    trimmed === "งานวันนี้" ||
-    trimmed === "สรุปงานวันนี้"
+    trimmed === "งานวันนี้"
   ) {
     return "/event today";
+  }
+
+  if (
+    trimmed === "ตารางสัปดาห์นี้" ||
+    trimmed === "ดูตารางสัปดาห์นี้" ||
+    trimmed === "งานสัปดาห์นี้"
+  ) {
+    return "/event week";
+  }
+
+  if (
+    trimmed === "ตารางเดือนนี้" ||
+    trimmed === "ดูตารางเดือนนี้" ||
+    trimmed === "งานเดือนนี้"
+  ) {
+    return "/event month";
+  }
+
+  if (trimmed === "สรุปงานวันนี้" || trimmed === "รายงานวันนี้") {
+    return "/summary today";
+  }
+
+  if (trimmed === "สรุปงานสัปดาห์นี้" || trimmed === "รายงานสัปดาห์นี้") {
+    return "/summary week";
+  }
+
+  if (trimmed === "สรุปงานเดือนนี้" || trimmed === "รายงานเดือนนี้") {
+    return "/summary month";
   }
 
   if (
@@ -80,9 +277,29 @@ function normalizeTextCommand(text: string): string {
     return `/staff send | ${staffNaturalMatch[1].trim()} | ${staffNaturalMatch[2].trim()}`;
   }
 
+  const roleStaffMatch = trimmed.match(/^ส่งข้อความให้(?:โรล|role)\s+(.+?)\s+ว่า\s+(.+)$/i);
+  if (roleStaffMatch) {
+    return `/staff send | ${roleStaffMatch[1].trim()} | ${roleStaffMatch[2].trim()}`;
+  }
+
+  const assignMatch = trimmed.match(/^ส่งงานให้\s+(.+?)\s+(.+)$/i);
+  if (assignMatch) {
+    return `/staff send | ${assignMatch[1].trim()} | ${assignMatch[2].trim()}`;
+  }
+
   const deleteNaturalMatch = trimmed.match(/^ลบกิจกรรม\s+(.+)$/i);
   if (deleteNaturalMatch) {
     return `/event delete | ${deleteNaturalMatch[1].trim()}`;
+  }
+
+  const rangeMatch = trimmed.match(/^ตารางช่วง\s+(.+?)\s+ถึง\s+(.+)$/i);
+  if (rangeMatch) {
+    return `/event range | ${rangeMatch[1].trim()} | ${rangeMatch[2].trim()}`;
+  }
+
+  const summaryRangeMatch = trimmed.match(/^สรุปงานช่วง\s+(.+?)\s+ถึง\s+(.+)$/i);
+  if (summaryRangeMatch) {
+    return `/summary range | ${summaryRangeMatch[1].trim()} | ${summaryRangeMatch[2].trim()}`;
   }
 
   const addNaturalMatch = trimmed.match(
@@ -221,6 +438,14 @@ export async function pushTextMessage(lineUserId: string, text: string): Promise
   });
 }
 
+export async function pushImageMessage(lineUserId: string, imageUrl: string): Promise<void> {
+  await getLineClient().pushMessage(lineUserId, {
+    type: "image",
+    originalContentUrl: imageUrl,
+    previewImageUrl: imageUrl
+  });
+}
+
 async function replyText(replyToken: string, text: string): Promise<void> {
   await getLineClient().replyMessage(replyToken, {
     type: "text",
@@ -303,12 +528,19 @@ async function createCalendarEventFromCommand(input: {
   locationDisplayName?: string;
   createdBy: string;
 }) {
+  const startDate = parseDateTimeInput(input.startAt);
+  const endDate = parseDateTimeInput(input.endAt);
+
+  if (!startDate || !endDate) {
+    return "⚠️ รูปแบบวันเวลายังไม่ถูกต้องครับ ใช้รูปแบบเช่น 2026-04-10 09:00";
+  }
+
   const { data, error } = await supabaseAdmin
     .from("calendar_events")
     .insert({
       title: input.title,
-      start_at: input.startAt,
-      end_at: input.endAt,
+      start_at: startDate.toISOString(),
+      end_at: endDate.toISOString(),
       location_type: input.locationType ?? "INTERNAL",
       location_display_name: input.locationDisplayName ?? null,
       created_by: input.createdBy
@@ -352,37 +584,39 @@ async function deleteCalendarEventByKeyword(keyword: string) {
   return `🗑️ ลบกิจกรรม "${event.title}" เรียบร้อยแล้ว`;
 }
 
-async function getTodayScheduleText() {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date();
-  end.setHours(23, 59, 59, 999);
+async function getScheduleTextForRange(start: Date, end: Date, title: string, label: string) {
+  const events = await getEventsBetween(start, end);
 
-  const { data, error } = await supabaseAdmin
-    .from("calendar_events")
-    .select("*")
-    .gte("start_at", start.toISOString())
-    .lte("start_at", end.toISOString())
-    .order("start_at", { ascending: true });
-
-  if (error) {
-    throw error;
+  if (events.length === 0) {
+    return `📅 ${title}\n\nช่วง ${label}\nไม่มีตารางงานครับ`;
   }
 
-  if (!data || data.length === 0) {
-    return "📅 วันนี้ไม่มีตารางงานครับ";
+  return `📅 ${title}\n\nช่วง ${label}\n${buildEventLines(events).join("\n")}`;
+}
+
+async function getSummaryTextForRange(start: Date, end: Date, title: string, label: string) {
+  const events = await getEventsBetween(start, end);
+
+  if (events.length === 0) {
+    return `🧾 ${title}\n\nช่วง ${label}\nไม่มีรายการงานที่ต้องสรุปครับ`;
   }
 
-  const lines = data.map((event, index) => {
-    const time = new Date(event.start_at).toLocaleTimeString("th-TH", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: config.APP_TIMEZONE
-    });
-    return `${index + 1}. ${time} - ${event.title}`;
-  });
+  const total = events.length;
+  const internalCount = events.filter((event) => event.location_type === "INTERNAL").length;
+  const majorCount = events.filter((event) => event.location_type === "MAJOR_UNIT").length;
+  const outsideCount = events.filter((event) => event.location_type === "OUTSIDE").length;
 
-  return `📅 ตารางงานวันนี้\n\n${lines.join("\n")}`;
+  return [
+    `🧾 ${title}`,
+    "",
+    `ช่วง ${label}`,
+    `รวมทั้งหมด ${total} งาน`,
+    `- ในหน่วย ${internalCount}`,
+    `- หน่วยใหญ่ ${majorCount}`,
+    `- นอกพื้นที่ ${outsideCount}`,
+    "",
+    ...buildEventLines(events)
+  ].join("\n");
 }
 
 async function createScheduleCard(lineUserId: string, requestedByUserId: string | null) {
@@ -467,21 +701,85 @@ async function tryHandleCommand(input: {
   const trimmed = normalizeTextCommand(input.text);
 
   if (trimmed === "/event today") {
-    return getTodayScheduleText();
+    const range = getRangeFromPreset("today");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
+  if (trimmed === "/event week") {
+    const range = getRangeFromPreset("week");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
+  if (trimmed === "/event month") {
+    const range = getRangeFromPreset("month");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
   }
 
   if (trimmed === "/card today") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ขอการ์ดสรุปงานครับ";
+    }
     return createScheduleCard(input.lineUserId, input.user.id);
+  }
+
+  if (trimmed === "/summary today") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("today");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานวันนี้", range.label);
+  }
+
+  if (trimmed === "/summary week") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("week");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานสัปดาห์นี้", range.label);
+  }
+
+  if (trimmed === "/summary month") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("month");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานเดือนนี้", range.label);
+  }
+
+  const eventRangeMatch = trimmed.match(/^\/event range\s*\|\s*([^|]+)\|\s*(.+)$/i);
+  if (eventRangeMatch) {
+    const start = parseDateInput(eventRangeMatch[1].trim(), false);
+    const end = parseDateInput(eventRangeMatch[2].trim(), true);
+    if (!start || !end) {
+      return "⚠️ ช่วงวันที่ยังไม่ถูกต้องครับ ใช้รูปแบบเช่น 2026-04-01 ถึง 2026-04-30";
+    }
+    return getScheduleTextForRange(start, end, "ตารางงานตามช่วงเวลา", `${formatThaiDate(start)} - ${formatThaiDate(end)}`);
+  }
+
+  const summaryRangeMatch = trimmed.match(/^\/summary range\s*\|\s*([^|]+)\|\s*(.+)$/i);
+  if (summaryRangeMatch) {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const start = parseDateInput(summaryRangeMatch[1].trim(), false);
+    const end = parseDateInput(summaryRangeMatch[2].trim(), true);
+    if (!start || !end) {
+      return "⚠️ ช่วงวันที่ยังไม่ถูกต้องครับ ใช้รูปแบบเช่น 2026-04-01 ถึง 2026-04-30";
+    }
+    return getSummaryTextForRange(start, end, "สรุปงานตามช่วงเวลา", `${formatThaiDate(start)} - ${formatThaiDate(end)}`);
   }
 
   const addMatch = trimmed.match(
     /^\/event add\s*\|\s*(.+?)\s*\|\s*([^|]+)\s*\|\s*([^|]+)(?:\|\s*([^|]+))?(?:\|\s*(.+))?$/i
   );
   if (addMatch) {
+    if (!canManageCalendar(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์เพิ่มกิจกรรมในปฏิทินกลางครับ";
+    }
     return createCalendarEventFromCommand({
       title: addMatch[1].trim(),
-      startAt: new Date(addMatch[2].trim()).toISOString(),
-      endAt: new Date(addMatch[3].trim()).toISOString(),
+      startAt: addMatch[2].trim(),
+      endAt: addMatch[3].trim(),
       locationType: addMatch[4]?.trim() ?? "INTERNAL",
       locationDisplayName: addMatch[5]?.trim() ?? null,
       createdBy: "line_command"
@@ -490,11 +788,17 @@ async function tryHandleCommand(input: {
 
   const deleteMatch = trimmed.match(/^\/event delete\s*\|\s*(.+)$/i);
   if (deleteMatch) {
+    if (!canManageCalendar(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ลบกิจกรรมในปฏิทินกลางครับ";
+    }
     return deleteCalendarEventByKeyword(deleteMatch[1].trim());
   }
 
   const staffMatch = trimmed.match(/^\/staff send\s*\|\s*([^|]+)\|\s*(.+)$/i);
   if (staffMatch) {
+    if (!canMessageStaff(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ส่งข้อความสั่งงานให้ทีมครับ";
+    }
     return sendStaffMessage({
       senderUserId: input.user.id,
       senderRole: input.user.role,
@@ -506,6 +810,9 @@ async function tryHandleCommand(input: {
 
   const staffFileMatch = trimmed.match(/^ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i);
   if (staffFileMatch && fileContextCache.has(input.lineUserId)) {
+    if (!canMessageStaff(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ส่งไฟล์พร้อมสั่งงานให้ทีมครับ";
+    }
     return sendStaffMessage({
       senderUserId: input.user.id,
       senderRole: input.user.role,

@@ -1,7 +1,8 @@
 import cron from "node-cron";
 import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
-import { pushTextMessage } from "../line/service";
+import { generateScheduleCard } from "../cards/service";
+import { pushImageMessage, pushTextMessage } from "../line/service";
 
 async function enqueueJob(jobType: string, jobKey: string, payload: Record<string, unknown>, runAt: Date) {
   const { error } = await supabaseAdmin.from("scheduler_jobs").upsert({
@@ -75,6 +76,50 @@ async function runDigestJob(kind: "morning_summary" | "evening_summary"): Promis
 
   for (const boss of bosses) {
     if (boss.line_user_id) {
+      if (kind === "morning_summary" && config.PUBLIC_BASE_URL) {
+        const dateLabel = new Intl.DateTimeFormat("th-TH", {
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+          timeZone: config.APP_TIMEZONE
+        }).format(dayStart);
+
+        const card = await generateScheduleCard({
+          dateLabel,
+          qrUrl: config.DASHBOARD_CARD_URL ?? config.NEXTJS_FRONTEND_URL ?? "https://example.com",
+          events:
+            (events ?? []).map((event) => ({
+              start: new Date(event.start_at).toLocaleTimeString("th-TH", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+                timeZone: config.APP_TIMEZONE
+              }),
+              end: new Date(event.end_at).toLocaleTimeString("th-TH", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+                timeZone: config.APP_TIMEZONE
+              }),
+              title: event.title,
+              location: event.location_display_name ?? "",
+              description: event.description ?? ""
+            })) ?? []
+        });
+
+        const imageUrl = `${config.PUBLIC_BASE_URL}${card.publicPath}`;
+        await pushImageMessage(boss.line_user_id, imageUrl);
+
+        await supabaseAdmin.from("generated_cards").insert({
+          requested_by_user_id: boss.id,
+          target_date: dayStart.toISOString().slice(0, 10),
+          image_url: imageUrl,
+          status: "completed",
+          completed_at: new Date().toISOString()
+        });
+      }
+
       await pushTextMessage(boss.line_user_id, message);
     }
   }
