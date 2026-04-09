@@ -6,8 +6,11 @@ RUN apk add --no-cache \
   py3-pip \
   py3-pillow \
   py3-qrcode \
+  py3-cairo \
+  py3-gobject3 \
   fontconfig \
-  font-noto-thai
+  font-noto-thai \
+  pango
 
 COPY package*.json ./
 RUN npm install
