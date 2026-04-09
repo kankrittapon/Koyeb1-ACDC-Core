@@ -122,6 +122,15 @@ type FlexMessageOptions = {
   quickReplyExit?: boolean;
 };
 
+type FileDeliveryCardInput = {
+  senderRole: string;
+  instruction: string;
+  fileRecordId: string;
+  fileName: string;
+  openUrl: string;
+  driveUrl?: string | null;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -1107,6 +1116,97 @@ function inferFlexOptions(text: string, overrides: FlexMessageOptions = {}): Fle
   return { ...overrides, title: "ACDC Assistant", accentColor: "#3b7a57" };
 }
 
+function buildFileDeliveryFlexMessage(input: FileDeliveryCardInput) {
+  const actions: any[] = [
+    {
+      type: "button",
+      style: "primary",
+      color: "#2563eb",
+      action: {
+        type: "uri",
+        label: "เปิดไฟล์",
+        uri: input.openUrl
+      }
+    }
+  ];
+
+  if (input.driveUrl) {
+    actions.push({
+      type: "button",
+      style: "secondary",
+      action: {
+        type: "uri",
+        label: "Google Drive",
+        uri: input.driveUrl
+      }
+    });
+  }
+
+  return {
+    type: "flex" as const,
+    altText: `ไฟล์จาก ${input.senderRole}: ${input.fileName}`,
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: "#0f766e",
+        contents: [
+          {
+            type: "text" as const,
+            text: "ไฟล์แนบพร้อมคำสั่ง",
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text" as const,
+            text: `จาก ${input.senderRole}`,
+            size: "sm",
+            color: "#475569"
+          },
+          {
+            type: "text" as const,
+            text: input.fileName,
+            wrap: true,
+            weight: "bold",
+            size: "md",
+            color: "#111827"
+          },
+          {
+            type: "separator" as const,
+            margin: "sm"
+          },
+          {
+            type: "text" as const,
+            text: input.instruction,
+            wrap: true,
+            size: "md",
+            color: "#111827"
+          }
+        ]
+      },
+      footer: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: actions
+      }
+    }
+  } as any;
+}
+
 export async function pushTextMessage(
   lineUserId: string,
   text: string,
@@ -1214,8 +1314,13 @@ async function sendStaffMessage(input: {
     latestUploadedFile?.originalFileName ??
     cachedFile?.fileName ??
     latestUploadedFile?.fileName;
+  const attachmentRecordId = cachedFile?.fileRecordId ?? latestUploadedFile?.id ?? null;
   const attachmentDriveUrl = cachedFile?.fileUrl || latestUploadedFile?.driveUrl;
   const attachmentLocalUrl = cachedFile?.localUrl || latestUploadedFile?.localDiskUrl;
+  const shortOpenUrl =
+    attachmentRecordId && config.PUBLIC_BASE_URL
+      ? `${config.PUBLIC_BASE_URL}/f/${attachmentRecordId}`
+      : attachmentLocalUrl || attachmentDriveUrl || null;
 
   if (attachmentName || attachmentDriveUrl || attachmentLocalUrl) {
     fullMessage += "\n\n📎 ไฟล์แนบพร้อมคำสั่ง";
@@ -1231,7 +1336,21 @@ async function sendStaffMessage(input: {
     }
   }
 
-  await pushTextMessage(targetUser.line_user_id, fullMessage);
+  if (attachmentName && shortOpenUrl) {
+    await getLineClient().pushMessage(
+      targetUser.line_user_id,
+      buildFileDeliveryFlexMessage({
+        senderRole: input.senderRole,
+        instruction: input.message,
+        fileRecordId: attachmentRecordId ?? "latest",
+        fileName: attachmentName,
+        openUrl: shortOpenUrl,
+        driveUrl: attachmentDriveUrl || undefined
+      })
+    );
+  } else {
+    await pushTextMessage(targetUser.line_user_id, fullMessage);
+  }
 
   await supabaseAdmin.from("staff_messages").insert({
     sender_user_id: input.senderUserId,

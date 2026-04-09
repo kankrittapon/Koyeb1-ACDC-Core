@@ -1,5 +1,6 @@
 import express, { NextFunction, Request, Response } from "express";
 import { config } from "./config";
+import { supabaseAdmin } from "./lib/supabase";
 import { requireAccess, requireRole } from "./middleware/auth";
 import { authRouter } from "./modules/auth/routes";
 import { usersRouter } from "./modules/users/routes";
@@ -63,6 +64,33 @@ app.get("/health", (_req, res) => {
     service: "koyeb1-acdc-core",
     timezone: config.APP_TIMEZONE
   });
+});
+
+app.get("/f/:id", async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("uploaded_files")
+      .select("id, drive_url, local_disk_url")
+      .eq("id", req.params.id)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    const target = data.local_disk_url || data.drive_url;
+    if (!target) {
+      return res.status(404).json({ error: "File URL not available" });
+    }
+
+    return res.redirect(302, target);
+  } catch (error) {
+    return next(error);
+  }
 });
 
 app.get("/api/modules", (_req, res) => {
