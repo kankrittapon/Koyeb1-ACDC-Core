@@ -1,7 +1,13 @@
 FROM node:22-alpine AS base
 WORKDIR /app
 
-RUN apk add --no-cache python3 py3-pip py3-pillow py3-qrcode
+RUN apk add --no-cache \
+  python3 \
+  py3-pip \
+  py3-pillow \
+  py3-qrcode \
+  fontconfig \
+  font-noto-thai
 
 COPY package*.json ./
 RUN npm install

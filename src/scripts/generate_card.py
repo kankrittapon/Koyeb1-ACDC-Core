@@ -49,6 +49,9 @@ def load_font(size, bold=False):
         candidates.extend(
             [
                 os.environ.get("CARD_FONT_BOLD"),
+                "/usr/share/fonts/noto/NotoSansThai-Bold.ttf",
+                "/usr/share/fonts/noto/NotoSerifThai-Bold.ttf",
+                "/usr/share/fonts/TTF/NotoSansThai-Bold.ttf",
                 "C:/Windows/Fonts/tahoma.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             ]
@@ -57,6 +60,9 @@ def load_font(size, bold=False):
         candidates.extend(
             [
                 os.environ.get("CARD_FONT_REGULAR"),
+                "/usr/share/fonts/noto/NotoSansThai-Regular.ttf",
+                "/usr/share/fonts/noto/NotoSerifThai-Regular.ttf",
+                "/usr/share/fonts/TTF/NotoSansThai-Regular.ttf",
                 "C:/Windows/Fonts/tahoma.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             ]
