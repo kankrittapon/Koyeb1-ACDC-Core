@@ -18,7 +18,6 @@ export async function requestGatewayChat(input: {
       "x-internal-api-key": config.KOYEB0_INTERNAL_API_KEY
     },
     body: JSON.stringify({
-      model: "gateway-default",
       policy: input.policy ?? config.KOYEB0_DEFAULT_POLICY,
       messages: [
         {
