@@ -63,6 +63,22 @@ const fileContextCache = new Map<
   { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
 >();
 
+const thaiWeekdayShort = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัส", "ศุกร์", "เสาร์"];
+const thaiMonthShort = [
+  "ม.ค.",
+  "ก.พ.",
+  "มี.ค.",
+  "เม.ย.",
+  "พ.ค.",
+  "มิ.ย.",
+  "ก.ค.",
+  "ส.ค.",
+  "ก.ย.",
+  "ต.ค.",
+  "พ.ย.",
+  "ธ.ค."
+];
+
 type BangkokDateParts = {
   year: number;
   month: number;
@@ -170,6 +186,41 @@ function getBangkokDateParts(now = new Date()): BangkokDateParts {
     year: valueOf("year"),
     month: valueOf("month"),
     day: valueOf("day")
+  };
+}
+
+function getBangkokDateTimeParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: config.APP_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    weekday: "short"
+  }).formatToParts(date);
+
+  const valueOf = (type: "year" | "month" | "day" | "hour" | "minute") =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
+  const weekdayToken = parts.find((part) => part.type === "weekday")?.value ?? "";
+  const weekdayMapEn: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+
+  return {
+    year: valueOf("year"),
+    month: valueOf("month"),
+    day: valueOf("day"),
+    hour: valueOf("hour"),
+    minute: valueOf("minute"),
+    weekday: weekdayMapEn[weekdayToken] ?? 0
   };
 }
 
@@ -446,6 +497,16 @@ function formatThaiDate(date: Date): string {
     year: "numeric",
     timeZone: config.APP_TIMEZONE
   });
+}
+
+function formatCardDateLabel(date: Date): string {
+  const parts = getBangkokDateTimeParts(date);
+  return `${thaiWeekdayShort[parts.weekday]} ${parts.day} ${thaiMonthShort[parts.month - 1]} ${parts.year + 543}`;
+}
+
+function formatCardTime(date: Date): string {
+  const parts = getBangkokDateTimeParts(date);
+  return `${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
 }
 
 type DateRangePreset = {
@@ -1122,31 +1183,17 @@ async function createScheduleCard(lineUserId: string, requestedByUserId: string 
   }
 
   const dateLabel = new Intl.DateTimeFormat("th-TH", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
     timeZone: config.APP_TIMEZONE
   }).format(start);
 
   const qrUrl = config.DASHBOARD_CARD_URL ?? config.NEXTJS_FRONTEND_URL ?? "https://example.com";
   const card = await generateScheduleCard({
-    dateLabel,
+    dateLabel: formatCardDateLabel(start),
     qrUrl,
     events:
       data?.map((event) => ({
-        start: new Date(event.start_at).toLocaleTimeString("th-TH", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-          timeZone: config.APP_TIMEZONE
-        }),
-        end: new Date(event.end_at).toLocaleTimeString("th-TH", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-          timeZone: config.APP_TIMEZONE
-        }),
+        start: formatCardTime(new Date(event.start_at)),
+        end: formatCardTime(new Date(event.end_at)),
         title: event.title,
         location: event.location_display_name ?? "",
         description: buildRichEventDescription(event)
