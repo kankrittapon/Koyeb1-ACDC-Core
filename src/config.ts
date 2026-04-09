@@ -62,6 +62,7 @@ const configSchema = z.object({
   GOOGLE_DRIVE_USER_FILE_FOLDER: z.string().optional(),
   GOOGLE_DRIVE_GUEST_FILE_FOLDER: z.string().optional(),
   DASHBOARD_CARD_URL: optionalUrl,
+  FILE_STORAGE_ROOT: z.string().default("storage/uploads"),
   MORNING_SUMMARY_CRON: z.string().default("0 7 * * *"),
   EVENING_SUMMARY_CRON: z.string().default("0 18 * * *"),
   EVENT_ALERT_CRON: z.string().default("*/5 * * * *")

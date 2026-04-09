@@ -4,6 +4,15 @@ import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
 import { requestGatewayChat } from "../ai-gateway/client";
 import { uploadFileToDrive } from "../drive/service";
+import {
+  bufferToReadable,
+  createUploadedFileRecord,
+  getLatestUploadedFileForLineUser,
+  markUploadedFileDriveFailed,
+  markUploadedFileDriveSynced,
+  readStreamToBuffer,
+  saveIncomingFileToDisk
+} from "../files/service";
 import { generateScheduleCard } from "../cards/service";
 
 const lineConfig: MiddlewareConfig = {
@@ -60,7 +69,16 @@ const weekdayMap = new Map<string, number>([
 
 const fileContextCache = new Map<
   string,
-  { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
+  {
+    fileRecordId: string;
+    fileName: string;
+    originalFileName?: string | null;
+    fileUrl: string;
+    localUrl?: string | null;
+    localPath?: string | null;
+    mimeType: string;
+    timestamp: number;
+  }
 >();
 const aiModeState = new Map<string, number>();
 const AI_MODE_IDLE_MS = 15 * 60 * 1000;
@@ -1129,6 +1147,30 @@ function buildRoleContext(user: {
 }
 
 async function findStaffUser(target: string) {
+  const aliasLookup = await supabaseAdmin
+    .from("user_aliases")
+    .select("user_id, alias")
+    .ilike("alias", target)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!aliasLookup.error && aliasLookup.data?.user_id) {
+    const byAlias = await supabaseAdmin
+      .from("users")
+      .select("id, username, role, line_user_id, line_display_name, nickname")
+      .eq("id", aliasLookup.data.user_id)
+      .maybeSingle();
+
+    if (byAlias.error) {
+      throw byAlias.error;
+    }
+
+    if (byAlias.data) {
+      return byAlias.data;
+    }
+  }
+
   const normalizedRole = target.toUpperCase();
   const { data, error } = await supabaseAdmin
     .from("users")
@@ -1152,6 +1194,7 @@ async function sendStaffMessage(input: {
   message: string;
   includeCachedFile?: boolean;
   lineUserId: string;
+  requestedFileName?: string | null;
 }) {
   const targetUser = await findStaffUser(input.target);
   if (!targetUser || !targetUser.line_user_id) {
@@ -1159,10 +1202,33 @@ async function sendStaffMessage(input: {
   }
 
   const cachedFile = input.includeCachedFile ? fileContextCache.get(input.lineUserId) : null;
+  const latestUploadedFile =
+    input.includeCachedFile && !cachedFile
+      ? await getLatestUploadedFileForLineUser(input.lineUserId)
+      : null;
   let fullMessage = `📨 ข้อความจาก ${input.senderRole}\n\n${input.message}`;
 
-  if (cachedFile) {
-    fullMessage += `\n\n📎 ไฟล์แนบ: ${cachedFile.fileUrl}`;
+  const attachmentName =
+    input.requestedFileName ??
+    cachedFile?.originalFileName ??
+    latestUploadedFile?.originalFileName ??
+    cachedFile?.fileName ??
+    latestUploadedFile?.fileName;
+  const attachmentDriveUrl = cachedFile?.fileUrl || latestUploadedFile?.driveUrl;
+  const attachmentLocalUrl = cachedFile?.localUrl || latestUploadedFile?.localDiskUrl;
+
+  if (attachmentName || attachmentDriveUrl || attachmentLocalUrl) {
+    fullMessage += "\n\n📎 ไฟล์แนบพร้อมคำสั่ง";
+    if (attachmentName) {
+      fullMessage += `\nชื่อไฟล์: ${attachmentName}`;
+    }
+    fullMessage += `\nคำสั่งงาน: ${input.message}`;
+    if (attachmentDriveUrl) {
+      fullMessage += `\nGoogle Drive: ${attachmentDriveUrl}`;
+    }
+    if (attachmentLocalUrl) {
+      fullMessage += `\nServer Copy: ${attachmentLocalUrl}`;
+    }
   }
 
   await pushTextMessage(targetUser.line_user_id, fullMessage);
@@ -1172,12 +1238,12 @@ async function sendStaffMessage(input: {
     target_user_id: targetUser.id,
     target_line_user_id: targetUser.line_user_id,
     message: input.message,
-    file_url: cachedFile?.fileUrl ?? null,
+    file_url: attachmentDriveUrl ?? attachmentLocalUrl ?? null,
     status: "sent",
     sent_at: new Date().toISOString()
   });
 
-  return `✅ ส่งข้อความถึง ${targetUser.nickname ?? targetUser.line_display_name ?? targetUser.username ?? input.target} เรียบร้อยแล้ว`;
+  return `✅ ส่งไฟล์และข้อความถึง ${targetUser.nickname ?? targetUser.line_display_name ?? targetUser.username ?? input.target} เรียบร้อยแล้ว`;
 }
 
 async function createCalendarEventFromCommand(input: {
@@ -1556,18 +1622,26 @@ async function tryHandleCommand(input: {
     });
   }
 
-  const staffFileMatch = trimmed.match(/^ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i);
-  if (staffFileMatch && fileContextCache.has(input.lineUserId)) {
+  const staffFileMatch =
+    trimmed.match(/^ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i) ??
+    trimmed.match(/^(.+?\.[a-z0-9]{2,6})\s+ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i);
+  if (staffFileMatch && (fileContextCache.has(input.lineUserId) || (await getLatestUploadedFileForLineUser(input.lineUserId)))) {
     if (!canMessageStaff(input.user.role)) {
       return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ส่งไฟล์พร้อมสั่งงานให้ทีมครับ";
     }
+
+    const requestedFileName = staffFileMatch.length === 4 ? staffFileMatch[1].trim() : null;
+    const target = staffFileMatch.length === 4 ? staffFileMatch[2].trim() : staffFileMatch[1].trim();
+    const message = staffFileMatch.length === 4 ? staffFileMatch[3].trim() : staffFileMatch[2].trim();
+
     return sendStaffMessage({
       senderUserId: input.user.id,
       senderRole: input.user.role,
-      target: staffFileMatch[1].trim(),
-      message: staffFileMatch[2].trim(),
+      target,
+      message,
       includeCachedFile: true,
-      lineUserId: input.lineUserId
+      lineUserId: input.lineUserId,
+      requestedFileName
     });
   }
 
@@ -1580,38 +1654,70 @@ async function handleBinaryUpload(
   lineUserId: string
 ) {
   const fileStream = await getLineClient().getMessageContent(event.message.id);
+  const fileBuffer = await readStreamToBuffer(fileStream);
   const isImage = event.message.type === "image";
-  const fileName = isImage
+  const originalFileName = isImage
     ? `upload_${Date.now()}.jpg`
     : event.message.fileName ?? `file_${Date.now()}`;
   const mimeType = isImage ? "image/jpeg" : "application/octet-stream";
 
-  const driveResult = await uploadFileToDrive({
-    fileName,
+  const storedLocalFile = await saveIncomingFileToDisk({
+    buffer: fileBuffer,
+    originalFileName,
     mimeType,
-    fileStream,
-    folderId: getDriveFolderId(user.role, mimeType)
+    role: user.role
   });
 
+  const fileRecord = await createUploadedFileRecord({
+    userId: user.id,
+    lineUserId,
+    lineMessageId: event.message.id,
+    sourceProvider: "line",
+    fileName: originalFileName,
+    mimeType,
+    local: storedLocalFile
+  });
+
+  let driveResult: { id: string; webViewLink: string | null } | null = null;
+  let driveSyncNotice = "";
+
+  try {
+    driveResult = await uploadFileToDrive({
+      fileName: originalFileName,
+      mimeType,
+      fileStream: bufferToReadable(fileBuffer),
+      folderId: getDriveFolderId(user.role, mimeType)
+    });
+
+    await markUploadedFileDriveSynced({
+      id: fileRecord.id,
+      driveFileId: driveResult.id,
+      driveUrl: driveResult.webViewLink
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown Google Drive sync failure";
+    await markUploadedFileDriveFailed({
+      id: fileRecord.id,
+      errorMessage: message
+    });
+    driveSyncNotice =
+      "\n\n⚠️ สำเนาบนเซิร์ฟเวอร์ถูกบันทึกแล้ว แต่การ sync ไป Google Drive ยังไม่สำเร็จในรอบนี้";
+  }
+
   fileContextCache.set(lineUserId, {
-    fileName,
-    fileUrl: driveResult.webViewLink ?? "",
+    fileRecordId: fileRecord.id,
+    fileName: originalFileName,
+    originalFileName,
+    fileUrl: driveResult?.webViewLink ?? storedLocalFile.publicUrl ?? "",
+    localUrl: storedLocalFile.publicUrl,
+    localPath: storedLocalFile.absolutePath,
     mimeType,
     timestamp: Date.now()
   });
 
-  await supabaseAdmin.from("uploaded_files").insert({
-    user_id: user.id,
-    line_user_id: lineUserId,
-    file_name: fileName,
-    mime_type: mimeType,
-    drive_file_id: driveResult.id,
-    drive_url: driveResult.webViewLink
-  });
-
   const response = isImage
-    ? `✅ บันทึกรูปภาพลง Google Drive เรียบร้อยครับ\n\n📎 Link: ${driveResult.webViewLink}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`
-    : `✅ บันทึกไฟล์ "${fileName}" ลง Google Drive เรียบร้อยครับ\n\n📎 Link: ${driveResult.webViewLink}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`;
+    ? `✅ บันทึกรูปภาพเรียบร้อยครับ\n\n💾 Server Copy: ${storedLocalFile.publicUrl ?? storedLocalFile.publicPath}${driveResult?.webViewLink ? `\n📎 Google Drive: ${driveResult.webViewLink}` : ""}${driveSyncNotice}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`
+    : `✅ บันทึกไฟล์ "${originalFileName}" เรียบร้อยครับ\n\n💾 Server Copy: ${storedLocalFile.publicUrl ?? storedLocalFile.publicPath}${driveResult?.webViewLink ? `\n📎 Google Drive: ${driveResult.webViewLink}` : ""}${driveSyncNotice}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`;
 
   await replyText(event.replyToken, response);
 }

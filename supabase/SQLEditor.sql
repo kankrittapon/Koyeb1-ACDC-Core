@@ -97,10 +97,44 @@ create table if not exists public.uploaded_files (
   line_user_id text,
   file_name text not null,
   mime_type text,
+  source_provider text not null default 'line',
+  line_message_id text,
+  original_file_name text,
+  stored_file_name text,
+  size_bytes bigint,
+  local_disk_path text,
+  local_disk_url text,
   drive_file_id text,
   drive_url text,
+  drive_sync_status text not null default 'pending',
+  drive_sync_error text,
+  updated_at timestamptz not null default now(),
   created_at timestamptz not null default now()
 );
+
+alter table public.uploaded_files add column if not exists source_provider text not null default 'line';
+alter table public.uploaded_files add column if not exists line_message_id text;
+alter table public.uploaded_files add column if not exists original_file_name text;
+alter table public.uploaded_files add column if not exists stored_file_name text;
+alter table public.uploaded_files add column if not exists size_bytes bigint;
+alter table public.uploaded_files add column if not exists local_disk_path text;
+alter table public.uploaded_files add column if not exists local_disk_url text;
+alter table public.uploaded_files add column if not exists drive_sync_status text not null default 'pending';
+alter table public.uploaded_files add column if not exists drive_sync_error text;
+alter table public.uploaded_files add column if not exists updated_at timestamptz not null default now();
+
+create index if not exists idx_uploaded_files_line_user_id on public.uploaded_files(line_user_id);
+create index if not exists idx_uploaded_files_created_at on public.uploaded_files(created_at desc);
+
+create table if not exists public.user_aliases (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users(id) on delete cascade,
+  alias text not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, alias)
+);
+
+create index if not exists idx_user_aliases_alias on public.user_aliases(alias);
 
 create table if not exists public.scheduler_jobs (
   id uuid primary key default gen_random_uuid(),

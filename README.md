@@ -141,6 +141,7 @@ This creates:
 - `staff_messages`
 - `generated_cards`
 - `uploaded_files`
+- `user_aliases`
 - `scheduler_jobs`
 - `event_alert_logs`
 - `webhook_logs`
@@ -177,6 +178,7 @@ Use [.env.example](C:/Users/zexqm/programing/MutiInformation/Koyeb1-ACDC-Core/.e
 - `PUBLIC_BASE_URL`
 - `NEXTJS_FRONTEND_URL`
 - `DASHBOARD_CARD_URL`
+- `FILE_STORAGE_ROOT`
 
 ### Google Drive
 
@@ -209,6 +211,14 @@ Optional role-aware folders:
 - `GOOGLE_DRIVE_ADMIN_FILE_FOLDER`
 - `GOOGLE_DRIVE_USER_FILE_FOLDER`
 - `GOOGLE_DRIVE_GUEST_FILE_FOLDER`
+
+### File Registry And Storage
+
+- uploaded files are now archived to local disk first
+- then synced to Google Drive
+- file metadata is stored in `uploaded_files`
+- user aliases for natural staff lookup are stored in `user_aliases`
+- static local file copies are served from `/uploads/...` when `PUBLIC_BASE_URL` is configured
 
 ### Jobs
 

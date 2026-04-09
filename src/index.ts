@@ -47,6 +47,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use("/images", express.static("public/images"));
+app.use("/uploads", express.static(config.FILE_STORAGE_ROOT));
 
 app.get("/", (_req, res) => {
   res.json({
