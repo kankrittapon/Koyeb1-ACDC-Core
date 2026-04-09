@@ -29,6 +29,20 @@ def wrap_text(text, font, max_width, draw):
     return lines
 
 
+def wrap_block(text, font, max_width, draw):
+    if not text:
+        return []
+
+    wrapped = []
+    for paragraph in text.splitlines():
+        stripped = paragraph.strip()
+        if not stripped:
+            wrapped.append("")
+            continue
+        wrapped.extend(wrap_text(stripped, font, max_width, draw))
+    return wrapped
+
+
 def load_font(size, bold=False):
     candidates = []
     if bold:
@@ -90,13 +104,13 @@ def generate_card(date_str, events, qr_url, output_path):
         wrapped_title = wrap_text(title, font_title, text_max_width, dummy_draw)
         loc_text = f"สถานที่: {location}" if location else ""
         wrapped_location = (
-            wrap_text(loc_text, font_small, text_max_width, dummy_draw)
+            wrap_block(loc_text, font_small, text_max_width, dummy_draw)
             if loc_text
             else []
         )
         desc_text = f"รายละเอียด: {description}" if description else ""
         wrapped_desc = (
-            wrap_text(desc_text, font_small, text_max_width, dummy_draw)
+            wrap_block(desc_text, font_small, text_max_width, dummy_draw)
             if desc_text
             else []
         )
@@ -106,6 +120,9 @@ def generate_card(date_str, events, qr_url, output_path):
                 return 0
             h = 0
             for line in lines:
+                if line == "":
+                    h += 16
+                    continue
                 bbox = dummy_draw.textbbox((0, 0), line, font=font)
                 h += (bbox[3] - bbox[1]) + 5
             return h
@@ -161,6 +178,9 @@ def generate_card(date_str, events, qr_url, output_path):
         if layout["loc_lines"]:
             content_y += 10
             for line in layout["loc_lines"]:
+                if line == "":
+                    content_y += 16
+                    continue
                 draw.text((separator_x + 40, content_y), line, fill=(130, 130, 130), font=font_small)
                 bbox = draw.textbbox((0, 0), line, font=font_small)
                 content_y += (bbox[3] - bbox[1]) + 5
@@ -168,6 +188,9 @@ def generate_card(date_str, events, qr_url, output_path):
         if layout["desc_lines"]:
             content_y += 10
             for line in layout["desc_lines"]:
+                if line == "":
+                    content_y += 16
+                    continue
                 draw.text((separator_x + 40, content_y), line, fill=(130, 130, 130), font=font_small)
                 bbox = draw.textbbox((0, 0), line, font=font_small)
                 content_y += (bbox[3] - bbox[1]) + 5

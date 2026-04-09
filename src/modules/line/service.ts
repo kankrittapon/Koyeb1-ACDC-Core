@@ -39,6 +39,24 @@ const researchKeywords = [
 const calendarManagerRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const summaryRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const staffMessagingRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
+const weekdayMap = new Map<string, number>([
+  ["อาทิตย์", 0],
+  ["วันอาทิตย์", 0],
+  ["จันทร์", 1],
+  ["วันจันทร์", 1],
+  ["อังคาร", 2],
+  ["วันอังคาร", 2],
+  ["พุธ", 3],
+  ["วันพุธ", 3],
+  ["พฤหัส", 4],
+  ["พฤหัสบดี", 4],
+  ["วันพฤหัส", 4],
+  ["วันพฤหัสบดี", 4],
+  ["ศุกร์", 5],
+  ["วันศุกร์", 5],
+  ["เสาร์", 6],
+  ["วันเสาร์", 6]
+]);
 
 const fileContextCache = new Map<
   string,
@@ -118,6 +136,248 @@ function parseDateTimeInput(input: string): Date | null {
 
   const parsed = new Date(trimmed);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toTimeParts(timeInput: string): { hour: number; minute: number } | null {
+  const normalized = timeInput.trim().replace(".", ":");
+  const compact = normalized.match(/^(\d{1,2})(\d{2})$/);
+  if (compact) {
+    const hour = Number(compact[1]);
+    const minute = Number(compact[2]);
+    if (hour > 23 || minute > 59) {
+      return null;
+    }
+    return { hour, minute };
+  }
+
+  const colon = normalized.match(/^(\d{1,2}):(\d{2})$/);
+  if (!colon) {
+    return null;
+  }
+
+  const hour = Number(colon[1]);
+  const minute = Number(colon[2]);
+  if (hour > 23 || minute > 59) {
+    return null;
+  }
+
+  return { hour, minute };
+}
+
+function parseTimeRangeInput(input: string): {
+  startHour: number;
+  startMinute: number;
+  endHour: number;
+  endMinute: number;
+} | null {
+  const normalized = input
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/–|—|ถึง/gi, "-");
+
+  const rangeMatch = normalized.match(/^(.+?)\s*-\s*(.+)$/);
+  if (rangeMatch) {
+    const start = toTimeParts(rangeMatch[1]);
+    const end = toTimeParts(rangeMatch[2]);
+    if (!start || !end) {
+      return null;
+    }
+    return {
+      startHour: start.hour,
+      startMinute: start.minute,
+      endHour: end.hour,
+      endMinute: end.minute
+    };
+  }
+
+  const single = toTimeParts(normalized);
+  if (!single) {
+    return null;
+  }
+
+  const fallbackEnd = new Date(2000, 0, 1, single.hour, single.minute, 0, 0);
+  fallbackEnd.setHours(fallbackEnd.getHours() + 1);
+
+  return {
+    startHour: single.hour,
+    startMinute: single.minute,
+    endHour: fallbackEnd.getHours(),
+    endMinute: fallbackEnd.getMinutes()
+  };
+}
+
+function resolveDayExpression(dayInput: string, now = new Date()): Date | null {
+  const trimmed = dayInput.trim().toLowerCase();
+  const base = new Date(now);
+  base.setHours(0, 0, 0, 0);
+
+  if (trimmed === "วันนี้") {
+    return base;
+  }
+
+  if (trimmed === "พรุ่งนี้") {
+    const date = new Date(base);
+    date.setDate(date.getDate() + 1);
+    return date;
+  }
+
+  if (trimmed === "มะรืน") {
+    const date = new Date(base);
+    date.setDate(date.getDate() + 2);
+    return date;
+  }
+
+  const explicit = parseDateInput(dayInput, false);
+  if (explicit) {
+    return explicit;
+  }
+
+  for (const [label, weekday] of weekdayMap.entries()) {
+    if (trimmed === label.toLowerCase() || trimmed === `${label.toLowerCase()}นี้`) {
+      const date = new Date(base);
+      let diff = (weekday - date.getDay() + 7) % 7;
+      if (diff === 0) {
+        diff = 7;
+      }
+      date.setDate(date.getDate() + diff);
+      return date;
+    }
+
+    if (trimmed === `${label.toLowerCase()}หน้า`) {
+      const date = new Date(base);
+      let diff = (weekday - date.getDay() + 7) % 7;
+      if (diff === 0) {
+        diff = 7;
+      }
+      date.setDate(date.getDate() + diff);
+      return date;
+    }
+  }
+
+  return null;
+}
+
+function buildEventDateTimes(dayInput: string, timeInput: string, now = new Date()) {
+  const date = resolveDayExpression(dayInput, now);
+  const timeRange = parseTimeRangeInput(timeInput);
+
+  if (!date || !timeRange) {
+    return null;
+  }
+
+  const start = new Date(date);
+  start.setHours(timeRange.startHour, timeRange.startMinute, 0, 0);
+  const end = new Date(date);
+  end.setHours(timeRange.endHour, timeRange.endMinute, 0, 0);
+
+  if (end.getTime() <= start.getTime()) {
+    end.setDate(end.getDate() + 1);
+  }
+
+  return { start, end };
+}
+
+function formatStructuredDescription(parts: {
+  outfit?: string;
+  note?: string;
+  details?: string;
+}): string | null {
+  const lines: string[] = [];
+
+  if (parts.outfit) {
+    lines.push(`ชุด: ${parts.outfit}`);
+  }
+
+  if (parts.note) {
+    lines.push(`หมายเหตุ: ${parts.note}`);
+  }
+
+  if (parts.details) {
+    const detailLines = parts.details
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (detailLines.length > 0) {
+      lines.push("รายละเอียดงาน:");
+      for (const line of detailLines) {
+        lines.push(line.startsWith("-") ? line : `- ${line}`);
+      }
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+function parseStructuredQuickEvent(text: string) {
+  const [firstLine, ...restLines] = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!firstLine) {
+    return null;
+  }
+
+  const fields = firstLine.split(",").map((field) => field.trim());
+  if (fields.length < 4) {
+    return null;
+  }
+
+  const [dayField, timeField, outfitField, activityField, locationField, noteField, ...extraFields] = fields;
+  const dateTimes = buildEventDateTimes(dayField, timeField);
+  if (!dateTimes || !activityField) {
+    return null;
+  }
+
+  const details = [...extraFields, ...restLines].filter(Boolean).join("\n");
+  const description = formatStructuredDescription({
+    outfit: outfitField || undefined,
+    note: noteField || undefined,
+    details: details || undefined
+  });
+
+  return {
+    title: activityField,
+    startAt: dateTimes.start.toISOString(),
+    endAt: dateTimes.end.toISOString(),
+    locationDisplayName: locationField || null,
+    description
+  };
+}
+
+function parseNaturalQuickEvent(text: string) {
+  const trimmed = text.trim();
+  const dayPattern = Array.from(weekdayMap.keys())
+    .sort((a, b) => b.length - a.length)
+    .map((label) => `${label}(?:นี้|หน้า)?`);
+  const regex = new RegExp(
+    `^((?:วันนี้|พรุ่งนี้|มะรืน|${dayPattern.join("|")}))\\s+((?:\\d{3,4}|\\d{1,2}:\\d{2})(?:\\s*(?:-|–|—|ถึง)\\s*(?:\\d{3,4}|\\d{1,2}:\\d{2}))?)\\s+(.+)$`,
+    "i"
+  );
+
+  const match = trimmed.match(regex);
+  if (!match) {
+    return null;
+  }
+
+  const [, dayField, timeField, rest] = match;
+  const dateTimes = buildEventDateTimes(dayField, timeField);
+  if (!dateTimes) {
+    return null;
+  }
+
+  const locationMatch = rest.match(/(.+?)\s+(?:ที่|สถานที่)\s+(.+)$/i);
+  const title = locationMatch ? locationMatch[1].trim() : rest.trim();
+  const locationDisplayName = locationMatch ? locationMatch[2].trim() : null;
+
+  return {
+    title,
+    startAt: dateTimes.start.toISOString(),
+    endAt: dateTimes.end.toISOString(),
+    locationDisplayName,
+    description: null
+  };
 }
 
 function formatThaiDate(date: Date): string {
@@ -311,6 +571,16 @@ function normalizeTextCommand(text: string): string {
     const end = addNaturalMatch[3].trim();
     const location = addNaturalMatch[4]?.trim();
     return `/event add | ${title} | ${start} | ${end} | INTERNAL | ${location ?? ""}`;
+  }
+
+  const structuredQuickEvent = parseStructuredQuickEvent(text);
+  if (structuredQuickEvent) {
+    return `/event quick | ${JSON.stringify(structuredQuickEvent)}`;
+  }
+
+  const naturalQuickEvent = parseNaturalQuickEvent(text);
+  if (naturalQuickEvent) {
+    return `/event quick | ${JSON.stringify(naturalQuickEvent)}`;
   }
 
   return trimmed;
@@ -526,6 +796,7 @@ async function createCalendarEventFromCommand(input: {
   endAt: string;
   locationType?: string;
   locationDisplayName?: string;
+  description?: string | null;
   createdBy: string;
 }) {
   const startDate = parseDateTimeInput(input.startAt);
@@ -539,6 +810,7 @@ async function createCalendarEventFromCommand(input: {
     .from("calendar_events")
     .insert({
       title: input.title,
+      description: input.description ?? null,
       start_at: startDate.toISOString(),
       end_at: endDate.toISOString(),
       location_type: input.locationType ?? "INTERNAL",
@@ -784,6 +1056,35 @@ async function tryHandleCommand(input: {
       locationDisplayName: addMatch[5]?.trim() ?? null,
       createdBy: "line_command"
     });
+  }
+
+  const quickEventMatch = trimmed.match(/^\/event quick\s*\|\s*(.+)$/i);
+  if (quickEventMatch) {
+    if (!canManageCalendar(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์เพิ่มกิจกรรมในปฏิทินกลางครับ";
+    }
+
+    try {
+      const quickEvent = JSON.parse(quickEventMatch[1]) as {
+        title: string;
+        startAt: string;
+        endAt: string;
+        locationDisplayName?: string | null;
+        description?: string | null;
+      };
+
+      return createCalendarEventFromCommand({
+        title: quickEvent.title,
+        startAt: quickEvent.startAt,
+        endAt: quickEvent.endAt,
+        locationType: "OUTSIDE",
+        locationDisplayName: quickEvent.locationDisplayName ?? undefined,
+        description: quickEvent.description ?? null,
+        createdBy: "line_quick_action"
+      });
+    } catch {
+      return "⚠️ ระบบแปลงคำสั่งตารางด่วนไม่สำเร็จครับ ลองใช้รูปแบบใหม่อีกครั้ง";
+    }
   }
 
   const deleteMatch = trimmed.match(/^\/event delete\s*\|\s*(.+)$/i);
