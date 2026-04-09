@@ -52,11 +52,11 @@ app.get("/api/modules", (_req, res) => {
   });
 });
 
-app.use("/api/auth", authRouter);
 if (config.ENABLE_LINE_WEBHOOK) {
   app.use(lineRouter);
 }
 app.use(express.json({ limit: "2mb" }));
+app.use("/api/auth", authRouter);
 app.use("/api/users", requireAccess, requireRole(["ADMIN"]), usersRouter);
 app.use(
   "/api/events",
