@@ -14,6 +14,16 @@ const configSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   LINE_CHANNEL_ACCESS_TOKEN: z.string().optional(),
   LINE_CHANNEL_SECRET: z.string().optional(),
+  ENABLE_LINE_WEBHOOK: z
+    .string()
+    .optional()
+    .default("false")
+    .transform((value) => value.toLowerCase() === "true"),
+  ENABLE_SCHEDULER: z
+    .string()
+    .optional()
+    .default("false")
+    .transform((value) => value.toLowerCase() === "true"),
   KOYEB0_BASE_URL: z.string().url(),
   KOYEB0_INTERNAL_API_KEY: z.string().min(1),
   KOYEB0_DEFAULT_POLICY: z.string().default("private_first"),

@@ -53,7 +53,9 @@ app.get("/api/modules", (_req, res) => {
 });
 
 app.use("/api/auth", authRouter);
-app.use(lineRouter);
+if (config.ENABLE_LINE_WEBHOOK) {
+  app.use(lineRouter);
+}
 app.use(express.json({ limit: "2mb" }));
 app.use("/api/users", requireAccess, requireRole(["ADMIN"]), usersRouter);
 app.use(
@@ -78,7 +80,9 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-initScheduler();
+if (config.ENABLE_SCHEDULER) {
+  initScheduler();
+}
 
 app.listen(config.PORT, () => {
   console.log(`Koyeb1-ACDC-Core listening on port ${config.PORT}`);

@@ -1,0 +1,11 @@
+services:
+  koyeb1-acdc-core:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: koyeb1-acdc-core
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${TAILSCALE_BIND_IP}:${KOYEB1_HOST_PORT}:8001"

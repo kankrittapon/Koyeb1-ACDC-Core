@@ -164,6 +164,7 @@ Use [.env.example](C:/Users/zexqm/programing/MutiInformation/Koyeb1-ACDC-Core/.e
 
 - `LINE_CHANNEL_ACCESS_TOKEN`
 - `LINE_CHANNEL_SECRET`
+- `ENABLE_LINE_WEBHOOK`
 
 ### AI Gateway
 
@@ -211,6 +212,7 @@ Optional role-aware folders:
 
 ### Jobs
 
+- `ENABLE_SCHEDULER`
 - `MORNING_SUMMARY_CRON`
 - `EVENING_SUMMARY_CRON`
 - `EVENT_ALERT_CRON`
@@ -260,6 +262,48 @@ Important:
 - generated images are served from `/images/...`
 - `PUBLIC_BASE_URL` must point to the public `Koyeb1` URL so LINE can load the generated image
 - if `PUBLIC_BASE_URL` is missing, schedule-card sending will fail
+- if `ENABLE_LINE_WEBHOOK=false`, the LINE route is not mounted
+- if `ENABLE_SCHEDULER=false`, cron jobs do not start
+
+## Deploy On The Ollama/Tailscale Host (`100.68.88.63`)
+
+This is a valid temporary deployment path if you want to keep everything on the same machine for now.
+
+Files prepared for this path:
+
+- `deploy/ai-brain/docker-compose.yml`
+- `deploy/ai-brain/.env.example`
+
+Recommended initial mode:
+
+- `ENABLE_LINE_WEBHOOK=false`
+- `ENABLE_SCHEDULER=false`
+- `KOYEB0_BASE_URL=http://100.68.88.63:18080`
+
+That lets you bring up the API first without enabling LINE or cron jobs yet.
+
+Suggested steps:
+
+1. clone this repo on `100.68.88.63`
+2. copy `deploy/ai-brain/.env.example` to `deploy/ai-brain/.env`
+3. fill:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `JWT_SECRET`
+- `KOYEB0_INTERNAL_API_KEY`
+4. optionally leave LINE and Google Drive values empty for the first boot
+5. run:
+
+```bash
+cd deploy/ai-brain
+docker compose up -d --build
+```
+
+6. verify:
+
+```bash
+curl http://100.68.88.63:18081/health
+```
 
 ## Deploy To Railway
 
