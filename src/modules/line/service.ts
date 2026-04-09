@@ -62,6 +62,8 @@ const fileContextCache = new Map<
   string,
   { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
 >();
+const aiModeState = new Map<string, number>();
+const AI_MODE_IDLE_MS = 15 * 60 * 1000;
 
 const thaiWeekdayShort = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัส", "ศุกร์", "เสาร์"];
 const thaiMonthShort = [
@@ -96,6 +98,12 @@ type QuickEventPayload = {
   taskDetails?: string | null;
 };
 
+type FlexMessageOptions = {
+  title?: string;
+  accentColor?: string;
+  quickReplyExit?: boolean;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -106,6 +114,41 @@ function getLineClient(): Client {
 
 function isResearchRequest(text: string): boolean {
   return researchKeywords.some((keyword) => text.includes(keyword));
+}
+
+function isExitAICommand(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return normalized === "exit" || normalized === "ออกจาก ai" || normalized === "จบ ai";
+}
+
+function isAIInvocation(text: string): boolean {
+  return /^ai(?:\s+.+)?$/i.test(text.trim());
+}
+
+function enterAIMode(lineUserId: string): void {
+  aiModeState.set(lineUserId, Date.now() + AI_MODE_IDLE_MS);
+}
+
+function clearAIMode(lineUserId: string): void {
+  aiModeState.delete(lineUserId);
+}
+
+function isAIModeActive(lineUserId: string): boolean {
+  const expiresAt = aiModeState.get(lineUserId);
+  if (!expiresAt) {
+    return false;
+  }
+  if (expiresAt <= Date.now()) {
+    aiModeState.delete(lineUserId);
+    return false;
+  }
+  return true;
+}
+
+function refreshAIMode(lineUserId: string): void {
+  if (isAIModeActive(lineUserId)) {
+    aiModeState.set(lineUserId, Date.now() + AI_MODE_IDLE_MS);
+  }
 }
 
 function canManageCalendar(role: string): boolean {
@@ -958,11 +1001,100 @@ function getDriveFolderId(role: string, mimeType: string): string | undefined {
   );
 }
 
-export async function pushTextMessage(lineUserId: string, text: string): Promise<void> {
-  await getLineClient().pushMessage(lineUserId, {
-    type: "text",
-    text
-  });
+function buildFlexTextMessage(text: string, options: FlexMessageOptions = {}) {
+  const title = options.title ?? "ACDC Assistant";
+  const accentColor = options.accentColor ?? "#3b7a57";
+
+  return {
+    type: "flex" as const,
+    altText: `${title}: ${text}`.slice(0, 400),
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: accentColor,
+        contents: [
+          {
+            type: "text" as const,
+            text: title,
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: text
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line, index, arr) => line.length > 0 || arr[index - 1] !== "")
+          .map((line) => ({
+            type: "text" as const,
+            text: line || " ",
+            wrap: true,
+            size: "md",
+            color: line.startsWith("⚠️") || line.startsWith("❌") ? "#b91c1c" : "#111827"
+          }))
+      }
+    },
+    quickReply: options.quickReplyExit
+      ? {
+          items: [
+            {
+              type: "action" as const,
+              action: {
+                type: "message" as const,
+                label: "Exit",
+                text: "exit"
+              }
+            }
+          ]
+        }
+      : undefined
+  } as any;
+}
+
+function inferFlexOptions(text: string, overrides: FlexMessageOptions = {}): FlexMessageOptions {
+  if (overrides.title) {
+    return overrides;
+  }
+
+  if (text.startsWith("⚠️") || text.startsWith("❌")) {
+    return { ...overrides, title: "แจ้งเตือน", accentColor: "#b91c1c" };
+  }
+
+  if (text.startsWith("✅")) {
+    return { ...overrides, title: "สำเร็จ", accentColor: "#15803d" };
+  }
+
+  if (text.startsWith("📅")) {
+    return { ...overrides, title: "ตารางงาน", accentColor: "#2563eb" };
+  }
+
+  if (text.startsWith("🧾")) {
+    return { ...overrides, title: "สรุปงาน", accentColor: "#7c3aed" };
+  }
+
+  if (text.startsWith("📨")) {
+    return { ...overrides, title: "ข้อความภายใน", accentColor: "#0f766e" };
+  }
+
+  return { ...overrides, title: "ACDC Assistant", accentColor: "#3b7a57" };
+}
+
+export async function pushTextMessage(
+  lineUserId: string,
+  text: string,
+  options: FlexMessageOptions = {}
+): Promise<void> {
+  await getLineClient().pushMessage(lineUserId, buildFlexTextMessage(text, inferFlexOptions(text, options)));
 }
 
 export async function pushImageMessage(lineUserId: string, imageUrl: string): Promise<void> {
@@ -973,11 +1105,12 @@ export async function pushImageMessage(lineUserId: string, imageUrl: string): Pr
   });
 }
 
-async function replyText(replyToken: string, text: string): Promise<void> {
-  await getLineClient().replyMessage(replyToken, {
-    type: "text",
-    text
-  });
+async function replyText(
+  replyToken: string,
+  text: string,
+  options: FlexMessageOptions = {}
+): Promise<void> {
+  await getLineClient().replyMessage(replyToken, buildFlexTextMessage(text, inferFlexOptions(text, options)));
 }
 
 function buildRoleContext(user: {
@@ -1491,12 +1624,85 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
 
   const user = await ensureLineUser(lineUserId);
   const text = event.message.text;
+  const trimmed = text.trim();
+  const aiModeActive = isAIModeActive(lineUserId);
 
   if (user.role === "GUEST") {
     const guestMessage =
       "⚠️ ขออภัยครับ ระบบยังไม่รู้จักคุณในฐานะพนักงาน กรุณาให้ Admin กำหนดสิทธิ์ให้ในระบบก่อนครับ";
     await logConversation(lineUserId, user.id, text, guestMessage);
     await replyText(event.replyToken, guestMessage);
+    return;
+  }
+
+  if (isExitAICommand(trimmed)) {
+    clearAIMode(lineUserId);
+    const message = "✅ ออกจาก AI Mode แล้วครับ\n\nตอนนี้ระบบกลับมาใช้ Quick Action ตามปกติแล้ว";
+    await logConversation(lineUserId, user.id, text, message);
+    await replyText(event.replyToken, message, {
+      title: "AI Mode",
+      accentColor: "#7c3aed"
+    });
+    return;
+  }
+
+  if (isAIInvocation(trimmed)) {
+    const prompt = trimmed.replace(/^ai\s*/i, "").trim();
+    enterAIMode(lineUserId);
+
+    if (!prompt) {
+      const message =
+        "🤖 เข้าสู่ AI Mode แล้วครับ\n\nพิมพ์คำถามหรือคำสั่งที่ต้องการได้เลย และเมื่อต้องการออกให้กด Exit หรือพิมพ์ exit";
+      await logConversation(lineUserId, user.id, text, message);
+      await replyText(event.replyToken, message, {
+        title: "AI Mode",
+        accentColor: "#7c3aed",
+        quickReplyExit: true
+      });
+      return;
+    }
+
+    const result = await requestGatewayChat({
+      prompt,
+      policy: config.KOYEB0_DEFAULT_POLICY,
+      context: `${buildRoleContext(user)}\nYou are in explicit AI mode. Answer helpfully in Thai.`,
+      metadata: {
+        source: "line_ai_mode",
+        lineUserId,
+        role: user.role
+      }
+    });
+
+    const answer = result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถตอบได้";
+    await logConversation(lineUserId, user.id, text, answer);
+    await replyText(event.replyToken, answer, {
+      title: "AI Mode",
+      accentColor: "#7c3aed",
+      quickReplyExit: true
+    });
+    return;
+  }
+
+  if (aiModeActive) {
+    refreshAIMode(lineUserId);
+    const result = await requestGatewayChat({
+      prompt: trimmed,
+      policy: config.KOYEB0_DEFAULT_POLICY,
+      context: `${buildRoleContext(user)}\nYou are in explicit AI mode. Answer helpfully in Thai.`,
+      metadata: {
+        source: "line_ai_mode",
+        lineUserId,
+        role: user.role
+      }
+    });
+
+    const answer = result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถตอบได้";
+    await logConversation(lineUserId, user.id, text, answer);
+    await replyText(event.replyToken, answer, {
+      title: "AI Mode",
+      accentColor: "#7c3aed",
+      quickReplyExit: true
+    });
     return;
   }
 
@@ -1515,54 +1721,14 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
     return;
   }
 
-  if ((user.role === "BOSS" || user.role === "ADMIN") && isResearchRequest(text)) {
-    await replyText(
-      event.replyToken,
-      "🔎 รับทราบครับ กำลังค้นข้อมูลและสรุปผลให้ โปรดรอสักครู่ครับ"
-    );
-
-    setImmediate(async () => {
-      try {
-        const result = await requestGatewayChat({
-          prompt: text,
-          policy: "private_first",
-          context: `${buildRoleContext(user)}\nResearch mode is active.`,
-          metadata: {
-            source: "line_async_research",
-            lineUserId,
-            role: user.role
-          }
-        });
-
-        const answer = result.text || "ไม่พบคำตอบที่เหมาะสมในขณะนี้ครับ";
-        await pushTextMessage(lineUserId, answer);
-        await logConversation(lineUserId, user.id, text, answer);
-      } catch (error) {
-        console.error("[Koyeb1] async LINE research failed:", error);
-        await pushTextMessage(
-          lineUserId,
-          "❌ เกิดข้อผิดพลาดระหว่างการค้นข้อมูลครับ ลองใหม่อีกครั้งได้เลย"
-        );
-      }
-    });
-
-    return;
-  }
-
-  const result = await requestGatewayChat({
-    prompt: text,
-    policy: config.KOYEB0_DEFAULT_POLICY,
-    context: buildRoleContext(user),
-    metadata: {
-      source: "line_chat",
-      lineUserId,
-      role: user.role
-    }
+  const fallbackMessage = isResearchRequest(text)
+    ? "🔎 ถ้าต้องการใช้ AI เพื่อค้นข้อมูลหรือสรุปผล กรุณาพิมพ์ขึ้นต้นด้วย AI เช่น\nAI ช่วยสรุปงานสัปดาห์นี้แบบผู้บริหาร"
+    : "💡 ระบบนี้ใช้ Quick Action เป็นหลักครับ\n\nถ้าต้องการคุยกับ AI โดยตรง ให้พิมพ์ขึ้นต้นด้วย AI เช่น\nAI ช่วยร่างข้อความสั่งงานให้เลขา";
+  await logConversation(lineUserId, user.id, text, fallbackMessage);
+  await replyText(event.replyToken, fallbackMessage, {
+    title: "Quick Action",
+    accentColor: "#2563eb"
   });
-
-  const answer = result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถตอบได้";
-  await logConversation(lineUserId, user.id, text, answer);
-  await replyText(event.replyToken, answer);
 }
 
 export async function handleLineEvent(event: WebhookEvent): Promise<void> {
