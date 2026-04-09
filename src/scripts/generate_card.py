@@ -13,7 +13,7 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import Pango, PangoCairo  # noqa: E402
 
 
-FONT_FAMILY = "Noto Sans Thai"
+FONT_FAMILY = "Sans"
 
 
 def render_text_block(text, font_size, max_width, color=(0, 0, 0), bold=False):
