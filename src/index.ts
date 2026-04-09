@@ -13,6 +13,35 @@ import { getRequestId } from "./lib/http";
 
 const app = express();
 
+const corsAllowedOrigins = config.CORS_ALLOW_ORIGINS.split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use((req, res, next) => {
+  const origin = req.header("origin");
+  const allowAnyOrigin = corsAllowedOrigins.includes("*");
+
+  if (allowAnyOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", origin ?? "*");
+    res.setHeader("Vary", "Origin");
+  } else if (origin && corsAllowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, x-internal-api-key, x-line-signature"
+  );
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
+  next();
+});
+
 app.use((req, res, next) => {
   res.setHeader("x-request-id", getRequestId(req));
   next();

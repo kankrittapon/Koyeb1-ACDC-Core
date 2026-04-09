@@ -37,6 +37,7 @@ const configSchema = z.object({
   KOYEB0_BASE_URL: z.string().url(),
   KOYEB0_INTERNAL_API_KEY: z.string().min(1),
   KOYEB0_DEFAULT_POLICY: z.string().default("private_first"),
+  CORS_ALLOW_ORIGINS: z.string().optional().default("*"),
   PUBLIC_BASE_URL: optionalUrl,
   NEXTJS_FRONTEND_URL: optionalUrl,
   GOOGLE_DRIVE_CLIENT_ID: z.string().optional(),
