@@ -867,17 +867,17 @@ function normalizeTextCommand(text: string): string {
     return "/card today";
   }
 
-  const staffNaturalMatch = trimmed.match(/^ส่งข้อความให้\s+(.+?)\s+ว่า\s+(.+)$/i);
+  const staffNaturalMatch = trimmed.match(/^ส่งข้อความให้\s*(.+?)\s+ว่า\s+(.+)$/i);
   if (staffNaturalMatch) {
     return `/staff send | ${staffNaturalMatch[1].trim()} | ${staffNaturalMatch[2].trim()}`;
   }
 
-  const roleStaffMatch = trimmed.match(/^ส่งข้อความให้(?:โรล|role)\s+(.+?)\s+ว่า\s+(.+)$/i);
+  const roleStaffMatch = trimmed.match(/^ส่งข้อความให้(?:โรล|role)\s*(.+?)\s+ว่า\s+(.+)$/i);
   if (roleStaffMatch) {
     return `/staff send | ${roleStaffMatch[1].trim()} | ${roleStaffMatch[2].trim()}`;
   }
 
-  const assignMatch = trimmed.match(/^ส่งงานให้\s+(.+?)\s+(.+)$/i);
+  const assignMatch = trimmed.match(/^ส่งงานให้\s*(.+?)\s+(.+)$/i);
   if (assignMatch) {
     return `/staff send | ${assignMatch[1].trim()} | ${assignMatch[2].trim()}`;
   }
@@ -1855,8 +1855,8 @@ async function tryHandleCommand(input: {
   }
 
   const staffFileMatch =
-    trimmed.match(/^ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i) ??
-    trimmed.match(/^(.+?\.[a-z0-9]{2,6})\s+ส่งไฟล์นี้ให้\s+(.+?)\s+(.+)$/i);
+    trimmed.match(/^ส่งไฟล์(?:นี้)?ให้\s*(.+?)\s+(.+)$/i) ??
+    trimmed.match(/^(.+?\.[a-z0-9]{2,6})\s+ส่งไฟล์(?:นี้)?ให้\s*(.+?)\s+(.+)$/i);
   if (staffFileMatch && (fileContextCache.has(input.lineUserId) || (await getLatestUploadedFileForLineUser(input.lineUserId)))) {
     if (!canMessageStaff(input.user.role)) {
       return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ส่งไฟล์พร้อมสั่งงานให้ทีมครับ";
