@@ -63,6 +63,23 @@ const fileContextCache = new Map<
   { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
 >();
 
+type BangkokDateParts = {
+  year: number;
+  month: number;
+  day: number;
+};
+
+type QuickEventPayload = {
+  title: string;
+  startAt: string;
+  endAt: string;
+  locationDisplayName?: string | null;
+  description?: string | null;
+  dressCode?: string | null;
+  note?: string | null;
+  taskDetails?: string | null;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -138,6 +155,38 @@ function parseDateTimeInput(input: string): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function getBangkokDateParts(now = new Date()): BangkokDateParts {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: config.APP_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now);
+
+  const valueOf = (type: "year" | "month" | "day") =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
+
+  return {
+    year: valueOf("year"),
+    month: valueOf("month"),
+    day: valueOf("day")
+  };
+}
+
+function toBangkokDateObject(parts: BangkokDateParts): Date {
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12, 0, 0, 0));
+}
+
+function datePartsToBangkokIso(
+  parts: BangkokDateParts,
+  hour: number,
+  minute: number
+): string {
+  return new Date(
+    Date.UTC(parts.year, parts.month - 1, parts.day, hour - 7, minute, 0, 0)
+  ).toISOString();
+}
+
 function toTimeParts(timeInput: string): { hour: number; minute: number } | null {
   const normalized = timeInput.trim().replace(".", ":");
   const compact = normalized.match(/^(\d{1,2})(\d{2})$/);
@@ -206,51 +255,71 @@ function parseTimeRangeInput(input: string): {
   };
 }
 
-function resolveDayExpression(dayInput: string, now = new Date()): Date | null {
+function resolveDayExpression(dayInput: string, now = new Date()): BangkokDateParts | null {
   const trimmed = dayInput.trim().toLowerCase();
-  const base = new Date(now);
-  base.setHours(0, 0, 0, 0);
+  const baseParts = getBangkokDateParts(now);
+  const base = toBangkokDateObject(baseParts);
 
   if (trimmed === "วันนี้") {
-    return base;
+    return baseParts;
   }
 
   if (trimmed === "พรุ่งนี้") {
     const date = new Date(base);
-    date.setDate(date.getDate() + 1);
-    return date;
+    date.setUTCDate(date.getUTCDate() + 1);
+    return {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate()
+    };
   }
 
   if (trimmed === "มะรืน") {
     const date = new Date(base);
-    date.setDate(date.getDate() + 2);
-    return date;
+    date.setUTCDate(date.getUTCDate() + 2);
+    return {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate()
+    };
   }
 
   const explicit = parseDateInput(dayInput, false);
   if (explicit) {
-    return explicit;
+    return {
+      year: explicit.getFullYear(),
+      month: explicit.getMonth() + 1,
+      day: explicit.getDate()
+    };
   }
 
   for (const [label, weekday] of weekdayMap.entries()) {
     if (trimmed === label.toLowerCase() || trimmed === `${label.toLowerCase()}นี้`) {
       const date = new Date(base);
-      let diff = (weekday - date.getDay() + 7) % 7;
+      let diff = (weekday - date.getUTCDay() + 7) % 7;
       if (diff === 0) {
         diff = 7;
       }
-      date.setDate(date.getDate() + diff);
-      return date;
+      date.setUTCDate(date.getUTCDate() + diff);
+      return {
+        year: date.getUTCFullYear(),
+        month: date.getUTCMonth() + 1,
+        day: date.getUTCDate()
+      };
     }
 
     if (trimmed === `${label.toLowerCase()}หน้า`) {
       const date = new Date(base);
-      let diff = (weekday - date.getDay() + 7) % 7;
+      let diff = (weekday - date.getUTCDay() + 7) % 7;
       if (diff === 0) {
         diff = 7;
       }
-      date.setDate(date.getDate() + diff);
-      return date;
+      date.setUTCDate(date.getUTCDate() + diff);
+      return {
+        year: date.getUTCFullYear(),
+        month: date.getUTCMonth() + 1,
+        day: date.getUTCDate()
+      };
     }
   }
 
@@ -265,35 +334,23 @@ function buildEventDateTimes(dayInput: string, timeInput: string, now = new Date
     return null;
   }
 
-  const start = new Date(date);
-  start.setHours(timeRange.startHour, timeRange.startMinute, 0, 0);
-  const end = new Date(date);
-  end.setHours(timeRange.endHour, timeRange.endMinute, 0, 0);
+  const startAt = datePartsToBangkokIso(date, timeRange.startHour, timeRange.startMinute);
+  const endAt = datePartsToBangkokIso(date, timeRange.endHour, timeRange.endMinute);
+  const start = new Date(startAt);
+  let end = new Date(endAt);
 
   if (end.getTime() <= start.getTime()) {
-    end.setDate(end.getDate() + 1);
+    end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
   }
 
-  return { start, end };
+  return { startAt, endAt: end.toISOString() };
 }
 
-function formatStructuredDescription(parts: {
-  outfit?: string;
-  note?: string;
-  details?: string;
-}): string | null {
+function formatStructuredDescription(parts: { taskDetails?: string }): string | null {
   const lines: string[] = [];
 
-  if (parts.outfit) {
-    lines.push(`ชุด: ${parts.outfit}`);
-  }
-
-  if (parts.note) {
-    lines.push(`หมายเหตุ: ${parts.note}`);
-  }
-
-  if (parts.details) {
-    const detailLines = parts.details
+  if (parts.taskDetails) {
+    const detailLines = parts.taskDetails
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
@@ -330,19 +387,20 @@ function parseStructuredQuickEvent(text: string) {
     return null;
   }
 
-  const details = [...extraFields, ...restLines].filter(Boolean).join("\n");
+  const taskDetails = [...extraFields, ...restLines].filter(Boolean).join("\n");
   const description = formatStructuredDescription({
-    outfit: outfitField || undefined,
-    note: noteField || undefined,
-    details: details || undefined
+    taskDetails: taskDetails || undefined
   });
 
   return {
     title: activityField,
-    startAt: dateTimes.start.toISOString(),
-    endAt: dateTimes.end.toISOString(),
+    startAt: dateTimes.startAt,
+    endAt: dateTimes.endAt,
     locationDisplayName: locationField || null,
-    description
+    description,
+    dressCode: outfitField || null,
+    note: noteField || null,
+    taskDetails: taskDetails || null
   };
 }
 
@@ -373,8 +431,8 @@ function parseNaturalQuickEvent(text: string) {
 
   return {
     title,
-    startAt: dateTimes.start.toISOString(),
-    endAt: dateTimes.end.toISOString(),
+    startAt: dateTimes.startAt,
+    endAt: dateTimes.endAt,
     locationDisplayName,
     description: null
   };
@@ -390,14 +448,23 @@ function formatThaiDate(date: Date): string {
   });
 }
 
-function getRangeFromPreset(preset: "today" | "week" | "month") {
+type DateRangePreset = {
+  start: Date;
+  end: Date;
+  label: string;
+  title: string;
+};
+
+function getRangeFromPreset(
+  preset: "today" | "week" | "month" | "tomorrow" | "dayaftertomorrow" | "nextweek" | "nextmonth"
+): DateRangePreset {
   const now = new Date();
+  const today = getBangkokDateParts(now);
+  const todayBase = toBangkokDateObject(today);
 
   if (preset === "today") {
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(now);
-    end.setHours(23, 59, 59, 999);
+    const start = new Date(Date.UTC(today.year, today.month - 1, today.day, -7, 0, 0, 0));
+    const end = new Date(Date.UTC(today.year, today.month - 1, today.day, 16, 59, 59, 999));
     return {
       start,
       end,
@@ -406,30 +473,66 @@ function getRangeFromPreset(preset: "today" | "week" | "month") {
     };
   }
 
-  if (preset === "week") {
-    const start = new Date(now);
-    const day = start.getDay();
-    const diff = day === 0 ? -6 : 1 - day;
-    start.setDate(start.getDate() + diff);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 6);
-    end.setHours(23, 59, 59, 999);
+  if (preset === "tomorrow" || preset === "dayaftertomorrow") {
+    const date = new Date(todayBase);
+    date.setUTCDate(date.getUTCDate() + (preset === "tomorrow" ? 1 : 2));
+    const start = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), -7, 0, 0, 0)
+    );
+    const end = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 16, 59, 59, 999)
+    );
     return {
       start,
       end,
-      label: `${formatThaiDate(start)} - ${formatThaiDate(end)}`,
+      label: `ประจำวัน ${formatThaiDate(start)}`,
+      title: preset === "tomorrow" ? "ตารางงานพรุ่งนี้" : "ตารางงานมะรืน"
+    };
+  }
+
+  if (preset === "week") {
+    const start = new Date(todayBase);
+    const day = start.getUTCDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    start.setUTCDate(start.getUTCDate() + diff);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 6);
+    const startAt = new Date(
+      Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(), -7, 0, 0, 0)
+    );
+    const endAt = new Date(
+      Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate(), 16, 59, 59, 999)
+    );
+    return {
+      start: startAt,
+      end: endAt,
+      label: `${formatThaiDate(startAt)} - ${formatThaiDate(endAt)}`,
       title: "ตารางงานสัปดาห์นี้"
     };
   }
 
-  const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  if (preset === "nextweek") {
+    const currentWeek = getRangeFromPreset("week");
+    const start = new Date(currentWeek.start.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const end = new Date(currentWeek.end.getTime() + 7 * 24 * 60 * 60 * 1000);
+    return {
+      start,
+      end,
+      label: `${formatThaiDate(start)} - ${formatThaiDate(end)}`,
+      title: "ตารางงานสัปดาห์หน้า"
+    };
+  }
+
+  const monthOffset = preset === "nextmonth" ? 1 : 0;
+  const start = new Date(Date.UTC(today.year, today.month - 1 + monthOffset, 1, -7, 0, 0, 0));
+  const end = new Date(
+    Date.UTC(today.year, today.month + monthOffset, 0, 16, 59, 59, 999)
+  );
   return {
     start,
     end,
     label: `${formatThaiDate(start)} - ${formatThaiDate(end)}`,
-    title: "ตารางงานเดือนนี้"
+    title: preset === "nextmonth" ? "ตารางงานเดือนหน้า" : "ตารางงานเดือนนี้"
   };
 }
 
@@ -437,6 +540,9 @@ type CalendarEventRow = {
   id: string;
   title: string;
   description?: string | null;
+  dress_code?: string | null;
+  note?: string | null;
+  task_details?: string | null;
   start_at: string;
   end_at: string;
   location_display_name?: string | null;
@@ -483,43 +589,133 @@ function buildEventLines(events: CalendarEventRow[]): string[] {
   });
 }
 
+function buildRichEventDescription(event: CalendarEventRow): string {
+  const lines: string[] = [];
+
+  if (event.description) {
+    lines.push(event.description);
+  }
+
+  if (event.dress_code) {
+    lines.push(`ชุด: ${event.dress_code}`);
+  }
+
+  if (event.note) {
+    lines.push(`หมายเหตุ: ${event.note}`);
+  }
+
+  if (event.task_details) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push("รายละเอียดงาน:");
+    lines.push(...event.task_details.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  }
+
+  return lines.join("\n").trim();
+}
+
 function normalizeTextCommand(text: string): string {
   const trimmed = text.trim();
+  const compact = trimmed.replace(/\s+/g, "");
+
+  if (/^(วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?)$/i.test(trimmed)) {
+    return `/clarify day | ${trimmed}`;
+  }
 
   if (
     trimmed === "ตารางวันนี้" ||
     trimmed === "ดูตารางวันนี้" ||
-    trimmed === "งานวันนี้"
+    trimmed === "งานวันนี้" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?(ที่ต้องทำ)?วันนี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact) ||
+    /^ตารางของ.*วันนี้$/i.test(trimmed)
   ) {
     return "/event today";
   }
 
   if (
+    trimmed === "ตารางพรุ่งนี้" ||
+    trimmed === "ดูตารางพรุ่งนี้" ||
+    trimmed === "งานพรุ่งนี้" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?(ที่ต้องทำ)?พรุ่งนี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
+  ) {
+    return "/event tomorrow";
+  }
+
+  if (
+    trimmed === "ตารางมะรืน" ||
+    trimmed === "ดูตารางมะรืน" ||
+    trimmed === "งานมะรืน" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?(ที่ต้องทำ)?มะรืน(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
+  ) {
+    return "/event dayaftertomorrow";
+  }
+
+  if (
     trimmed === "ตารางสัปดาห์นี้" ||
     trimmed === "ดูตารางสัปดาห์นี้" ||
-    trimmed === "งานสัปดาห์นี้"
+    trimmed === "งานสัปดาห์นี้" ||
+    trimmed === "สัปดาห์นี้ล่ะ" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?สัปดาห์นี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact) ||
+    /^ตารางของ.*สัปดาห์นี้$/i.test(trimmed)
   ) {
     return "/event week";
   }
 
   if (
+    trimmed === "ตารางสัปดาห์หน้า" ||
+    trimmed === "ดูตารางสัปดาห์หน้า" ||
+    trimmed === "งานสัปดาห์หน้า" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?สัปดาห์หน้า(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact) ||
+    /^ตารางของ.*สัปดาห์หน้า$/i.test(trimmed)
+  ) {
+    return "/event nextweek";
+  }
+
+  if (
     trimmed === "ตารางเดือนนี้" ||
     trimmed === "ดูตารางเดือนนี้" ||
-    trimmed === "งานเดือนนี้"
+    trimmed === "งานเดือนนี้" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?เดือนนี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
   ) {
     return "/event month";
+  }
+
+  if (
+    trimmed === "ตารางเดือนหน้า" ||
+    trimmed === "ดูตารางเดือนหน้า" ||
+    trimmed === "งานเดือนหน้า" ||
+    /^(ขอดู|ดู|มี)?งาน(อะไร)?เดือนหน้า(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
+  ) {
+    return "/event nextmonth";
   }
 
   if (trimmed === "สรุปงานวันนี้" || trimmed === "รายงานวันนี้") {
     return "/summary today";
   }
 
+  if (trimmed === "สรุปงานพรุ่งนี้" || trimmed === "รายงานพรุ่งนี้") {
+    return "/summary tomorrow";
+  }
+
+  if (trimmed === "สรุปงานมะรืน" || trimmed === "รายงานมะรืน") {
+    return "/summary dayaftertomorrow";
+  }
+
   if (trimmed === "สรุปงานสัปดาห์นี้" || trimmed === "รายงานสัปดาห์นี้") {
     return "/summary week";
   }
 
+  if (trimmed === "สรุปงานสัปดาห์หน้า" || trimmed === "รายงานสัปดาห์หน้า") {
+    return "/summary nextweek";
+  }
+
   if (trimmed === "สรุปงานเดือนนี้" || trimmed === "รายงานเดือนนี้") {
     return "/summary month";
+  }
+
+  if (trimmed === "สรุปงานเดือนหน้า" || trimmed === "รายงานเดือนหน้า") {
+    return "/summary nextmonth";
   }
 
   if (
@@ -797,6 +993,9 @@ async function createCalendarEventFromCommand(input: {
   locationType?: string;
   locationDisplayName?: string;
   description?: string | null;
+  dressCode?: string | null;
+  note?: string | null;
+  taskDetails?: string | null;
   createdBy: string;
 }) {
   const startDate = parseDateTimeInput(input.startAt);
@@ -811,6 +1010,9 @@ async function createCalendarEventFromCommand(input: {
     .insert({
       title: input.title,
       description: input.description ?? null,
+      dress_code: input.dressCode ?? null,
+      note: input.note ?? null,
+      task_details: input.taskDetails ?? null,
       start_at: startDate.toISOString(),
       end_at: endDate.toISOString(),
       location_type: input.locationType ?? "INTERNAL",
@@ -936,7 +1138,7 @@ async function createScheduleCard(lineUserId: string, requestedByUserId: string 
         }),
         title: event.title,
         location: event.location_display_name ?? "",
-        description: event.description ?? ""
+        description: buildRichEventDescription(event)
       })) ?? []
   });
 
@@ -977,13 +1179,33 @@ async function tryHandleCommand(input: {
     return getScheduleTextForRange(range.start, range.end, range.title, range.label);
   }
 
+  if (trimmed === "/event tomorrow") {
+    const range = getRangeFromPreset("tomorrow");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
+  if (trimmed === "/event dayaftertomorrow") {
+    const range = getRangeFromPreset("dayaftertomorrow");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
   if (trimmed === "/event week") {
     const range = getRangeFromPreset("week");
     return getScheduleTextForRange(range.start, range.end, range.title, range.label);
   }
 
+  if (trimmed === "/event nextweek") {
+    const range = getRangeFromPreset("nextweek");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
   if (trimmed === "/event month") {
     const range = getRangeFromPreset("month");
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
+  if (trimmed === "/event nextmonth") {
+    const range = getRangeFromPreset("nextmonth");
     return getScheduleTextForRange(range.start, range.end, range.title, range.label);
   }
 
@@ -1002,6 +1224,22 @@ async function tryHandleCommand(input: {
     return getSummaryTextForRange(range.start, range.end, "สรุปงานวันนี้", range.label);
   }
 
+  if (trimmed === "/summary tomorrow") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("tomorrow");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานพรุ่งนี้", range.label);
+  }
+
+  if (trimmed === "/summary dayaftertomorrow") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("dayaftertomorrow");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานมะรืน", range.label);
+  }
+
   if (trimmed === "/summary week") {
     if (!canRequestSummary(input.user.role)) {
       return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
@@ -1010,12 +1248,33 @@ async function tryHandleCommand(input: {
     return getSummaryTextForRange(range.start, range.end, "สรุปงานสัปดาห์นี้", range.label);
   }
 
+  if (trimmed === "/summary nextweek") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("nextweek");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานสัปดาห์หน้า", range.label);
+  }
+
   if (trimmed === "/summary month") {
     if (!canRequestSummary(input.user.role)) {
       return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
     }
     const range = getRangeFromPreset("month");
     return getSummaryTextForRange(range.start, range.end, "สรุปงานเดือนนี้", range.label);
+  }
+
+  if (trimmed === "/summary nextmonth") {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeFromPreset("nextmonth");
+    return getSummaryTextForRange(range.start, range.end, "สรุปงานเดือนหน้า", range.label);
+  }
+
+  const clarifyDayMatch = trimmed.match(/^\/clarify day\s*\|\s*(.+)$/i);
+  if (clarifyDayMatch) {
+    return `📌 ต้องการให้ผมดูตารางหรือเพิ่มกิจกรรมใน "${clarifyDayMatch[1].trim()}" ครับ\n\nตัวอย่าง:\n- ตาราง ${clarifyDayMatch[1].trim()}\n- ${clarifyDayMatch[1].trim()} 0800 ไปงานแต่งนะ`;
   }
 
   const eventRangeMatch = trimmed.match(/^\/event range\s*\|\s*([^|]+)\|\s*(.+)$/i);
@@ -1065,13 +1324,7 @@ async function tryHandleCommand(input: {
     }
 
     try {
-      const quickEvent = JSON.parse(quickEventMatch[1]) as {
-        title: string;
-        startAt: string;
-        endAt: string;
-        locationDisplayName?: string | null;
-        description?: string | null;
-      };
+      const quickEvent = JSON.parse(quickEventMatch[1]) as QuickEventPayload;
 
       return createCalendarEventFromCommand({
         title: quickEvent.title,
@@ -1080,6 +1333,9 @@ async function tryHandleCommand(input: {
         locationType: "OUTSIDE",
         locationDisplayName: quickEvent.locationDisplayName ?? undefined,
         description: quickEvent.description ?? null,
+        dressCode: quickEvent.dressCode ?? null,
+        note: quickEvent.note ?? null,
+        taskDetails: quickEvent.taskDetails ?? null,
         createdBy: "line_quick_action"
       });
     } catch {

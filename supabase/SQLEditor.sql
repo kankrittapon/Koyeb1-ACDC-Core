@@ -18,6 +18,9 @@ create table if not exists public.calendar_events (
   id uuid primary key default gen_random_uuid(),
   title text not null,
   description text,
+  dress_code text,
+  note text,
+  task_details text,
   start_at timestamptz not null,
   end_at timestamptz not null,
   is_all_day boolean not null default false,
@@ -28,6 +31,10 @@ create table if not exists public.calendar_events (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.calendar_events add column if not exists dress_code text;
+alter table public.calendar_events add column if not exists note text;
+alter table public.calendar_events add column if not exists task_details text;
 
 create index if not exists idx_calendar_events_start_at on public.calendar_events(start_at);
 create index if not exists idx_calendar_events_owner_user_id on public.calendar_events(owner_user_id);

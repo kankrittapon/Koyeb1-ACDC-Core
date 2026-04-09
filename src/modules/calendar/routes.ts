@@ -6,6 +6,9 @@ import { supabaseAdmin } from "../../lib/supabase";
 const eventSchema = z.object({
   title: z.string().min(1),
   description: z.string().nullable().optional(),
+  dressCode: z.string().nullable().optional(),
+  note: z.string().nullable().optional(),
+  taskDetails: z.string().nullable().optional(),
   startAt: z.string().datetime(),
   endAt: z.string().datetime(),
   isAllDay: z.boolean().optional(),
@@ -56,6 +59,9 @@ calendarRouter.post(
       .insert({
         title: body.title,
         description: body.description ?? null,
+        dress_code: body.dressCode ?? null,
+        note: body.note ?? null,
+        task_details: body.taskDetails ?? null,
         start_at: body.startAt,
         end_at: body.endAt,
         is_all_day: body.isAllDay ?? false,
@@ -85,6 +91,9 @@ calendarRouter.patch(
 
     if (body.title !== undefined) updatePayload.title = body.title;
     if (body.description !== undefined) updatePayload.description = body.description;
+    if (body.dressCode !== undefined) updatePayload.dress_code = body.dressCode;
+    if (body.note !== undefined) updatePayload.note = body.note;
+    if (body.taskDetails !== undefined) updatePayload.task_details = body.taskDetails;
     if (body.startAt !== undefined) updatePayload.start_at = body.startAt;
     if (body.endAt !== undefined) updatePayload.end_at = body.endAt;
     if (body.isAllDay !== undefined) updatePayload.is_all_day = body.isAllDay;
