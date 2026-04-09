@@ -87,7 +87,7 @@ app.get("/f/:id", async (req, res, next) => {
       return res.status(404).json({ error: "File URL not available" });
     }
 
-    return res.redirect(302, target);
+    return res.redirect(302, encodeURI(target));
   } catch (error) {
     return next(error);
   }

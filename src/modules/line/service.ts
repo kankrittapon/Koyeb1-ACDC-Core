@@ -131,6 +131,14 @@ type FileDeliveryCardInput = {
   driveUrl?: string | null;
 };
 
+type UploadSuccessCardInput = {
+  title: string;
+  isImage: boolean;
+  openUrl: string;
+  driveUrl?: string | null;
+  driveFailed?: boolean;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -1207,6 +1215,111 @@ function buildFileDeliveryFlexMessage(input: FileDeliveryCardInput) {
   } as any;
 }
 
+function buildUploadSuccessFlexMessage(input: UploadSuccessCardInput) {
+  const footerButtons: any[] = [
+    {
+      type: "button",
+      style: "primary",
+      color: "#2563eb",
+      action: {
+        type: "uri",
+        label: "เปิดไฟล์",
+        uri: input.openUrl
+      }
+    }
+  ];
+
+  if (input.driveUrl) {
+    footerButtons.push({
+      type: "button",
+      style: "secondary",
+      action: {
+        type: "uri",
+        label: "Google Drive",
+        uri: input.driveUrl
+      }
+    });
+  }
+
+  return {
+    type: "flex" as const,
+    altText: `บันทึกไฟล์สำเร็จ: ${input.title}`,
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: input.driveFailed ? "#b45309" : "#15803d",
+        contents: [
+          {
+            type: "text" as const,
+            text: input.driveFailed ? "บันทึกไฟล์แล้ว" : "บันทึกไฟล์สำเร็จ",
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text" as const,
+            text: input.title,
+            wrap: true,
+            weight: "bold",
+            size: "md",
+            color: "#111827"
+          },
+          {
+            type: "text" as const,
+            text: input.isImage
+              ? "ไฟล์รูปถูกเก็บในระบบแล้ว"
+              : "ไฟล์เอกสารถูกเก็บในระบบแล้ว",
+            wrap: true,
+            size: "sm",
+            color: "#475569"
+          },
+          {
+            type: "text" as const,
+            text: input.driveFailed
+              ? "Google Drive ยังไม่สำเร็จในรอบนี้ แต่สำเนาในระบบพร้อมใช้งาน"
+              : input.driveUrl
+                ? "มีทั้งสำเนาในระบบและ Google Drive"
+                : "สำเนาในระบบพร้อมใช้งาน",
+            wrap: true,
+            size: "sm",
+            color: input.driveFailed ? "#b45309" : "#475569"
+          },
+          {
+            type: "separator" as const,
+            margin: "sm"
+          },
+          {
+            type: "text" as const,
+            text: "ใช้คำสั่ง \"ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]\" เพื่อส่งต่อได้เลย",
+            wrap: true,
+            size: "sm",
+            color: "#111827"
+          }
+        ]
+      },
+      footer: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: footerButtons
+      }
+    }
+  } as any;
+}
+
 export async function pushTextMessage(
   lineUserId: string,
   text: string,
@@ -1798,7 +1911,7 @@ async function handleBinaryUpload(
   });
 
   let driveResult: { id: string; webViewLink: string | null } | null = null;
-  let driveSyncNotice = "";
+  let driveFailed = false;
 
   try {
     driveResult = await uploadFileToDrive({
@@ -1814,13 +1927,12 @@ async function handleBinaryUpload(
       driveUrl: driveResult.webViewLink
     });
   } catch (error) {
+    driveFailed = true;
     const message = error instanceof Error ? error.message : "Unknown Google Drive sync failure";
     await markUploadedFileDriveFailed({
       id: fileRecord.id,
       errorMessage: message
     });
-    driveSyncNotice =
-      "\n\n⚠️ สำเนาบนเซิร์ฟเวอร์ถูกบันทึกแล้ว แต่การ sync ไป Google Drive ยังไม่สำเร็จในรอบนี้";
   }
 
   fileContextCache.set(lineUserId, {
@@ -1834,11 +1946,21 @@ async function handleBinaryUpload(
     timestamp: Date.now()
   });
 
-  const response = isImage
-    ? `✅ บันทึกรูปภาพเรียบร้อยครับ\n\n💾 Server Copy: ${storedLocalFile.publicUrl ?? storedLocalFile.publicPath}${driveResult?.webViewLink ? `\n📎 Google Drive: ${driveResult.webViewLink}` : ""}${driveSyncNotice}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`
-    : `✅ บันทึกไฟล์ "${originalFileName}" เรียบร้อยครับ\n\n💾 Server Copy: ${storedLocalFile.publicUrl ?? storedLocalFile.publicPath}${driveResult?.webViewLink ? `\n📎 Google Drive: ${driveResult.webViewLink}` : ""}${driveSyncNotice}\n\n💡 ใช้คำสั่ง "ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ]" เพื่อส่งต่อได้เลย`;
+  const openUrl =
+    config.PUBLIC_BASE_URL && fileRecord.id
+      ? `${config.PUBLIC_BASE_URL}/f/${fileRecord.id}`
+      : storedLocalFile.publicUrl ?? `${config.PUBLIC_BASE_URL ?? ""}${storedLocalFile.publicPath}`;
 
-  await replyText(event.replyToken, response);
+  await getLineClient().replyMessage(
+    event.replyToken,
+    buildUploadSuccessFlexMessage({
+      title: originalFileName,
+      isImage,
+      openUrl,
+      driveUrl: driveResult?.webViewLink ?? null,
+      driveFailed
+    })
+  );
 }
 
 async function handleTextMessage(event: WebhookEvent & { type: "message"; message: { type: "text"; text: string } }) {

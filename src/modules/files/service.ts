@@ -16,6 +16,13 @@ export type StoredLocalFile = {
   publicUrl: string | null;
 };
 
+function buildPublicPathFromRelativePath(relativePath: string): string {
+  return `/uploads/${normalizeRelativePath(relativePath)
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
+}
+
 export type UploadedFileRecord = {
   id: string;
   fileName: string;
@@ -85,7 +92,7 @@ export async function saveIncomingFileToDisk(input: {
   await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.promises.writeFile(absolutePath, input.buffer);
 
-  const publicPath = `/uploads/${normalizeRelativePath(relativePath)}`;
+  const publicPath = buildPublicPathFromRelativePath(relativePath);
   return {
     originalFileName: safeOriginalName,
     storedFileName,
