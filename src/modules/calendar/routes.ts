@@ -53,23 +53,31 @@ calendarRouter.post(
   "/",
   asyncHandler(async (req, res) => {
     const body = eventSchema.parse(req.body);
+    const insertPayload: Record<string, unknown> = {
+      title: body.title,
+      description: body.description ?? null,
+      start_at: body.startAt,
+      end_at: body.endAt,
+      is_all_day: body.isAllDay ?? false,
+      location_type: body.locationType,
+      location_display_name: body.locationDisplayName ?? null,
+      owner_user_id: body.ownerUserId ?? null,
+      created_by: body.createdBy
+    };
+
+    if (body.dressCode !== undefined && body.dressCode !== null) {
+      insertPayload.dress_code = body.dressCode;
+    }
+    if (body.note !== undefined && body.note !== null) {
+      insertPayload.note = body.note;
+    }
+    if (body.taskDetails !== undefined && body.taskDetails !== null) {
+      insertPayload.task_details = body.taskDetails;
+    }
 
     const { data, error } = await supabaseAdmin
       .from("calendar_events")
-      .insert({
-        title: body.title,
-        description: body.description ?? null,
-        dress_code: body.dressCode ?? null,
-        note: body.note ?? null,
-        task_details: body.taskDetails ?? null,
-        start_at: body.startAt,
-        end_at: body.endAt,
-        is_all_day: body.isAllDay ?? false,
-        location_type: body.locationType,
-        location_display_name: body.locationDisplayName ?? null,
-        owner_user_id: body.ownerUserId ?? null,
-        created_by: body.createdBy
-      })
+      .insert(insertPayload)
       .select("*")
       .single();
 
@@ -91,9 +99,9 @@ calendarRouter.patch(
 
     if (body.title !== undefined) updatePayload.title = body.title;
     if (body.description !== undefined) updatePayload.description = body.description;
-    if (body.dressCode !== undefined) updatePayload.dress_code = body.dressCode;
-    if (body.note !== undefined) updatePayload.note = body.note;
-    if (body.taskDetails !== undefined) updatePayload.task_details = body.taskDetails;
+    if (body.dressCode !== undefined && body.dressCode !== null) updatePayload.dress_code = body.dressCode;
+    if (body.note !== undefined && body.note !== null) updatePayload.note = body.note;
+    if (body.taskDetails !== undefined && body.taskDetails !== null) updatePayload.task_details = body.taskDetails;
     if (body.startAt !== undefined) updatePayload.start_at = body.startAt;
     if (body.endAt !== undefined) updatePayload.end_at = body.endAt;
     if (body.isAllDay !== undefined) updatePayload.is_all_day = body.isAllDay;

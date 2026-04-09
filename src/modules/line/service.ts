@@ -1005,20 +1005,31 @@ async function createCalendarEventFromCommand(input: {
     return "⚠️ รูปแบบวันเวลายังไม่ถูกต้องครับ ใช้รูปแบบเช่น 2026-04-10 09:00";
   }
 
+  const insertPayload: Record<string, unknown> = {
+    title: input.title,
+    description: input.description ?? null,
+    start_at: startDate.toISOString(),
+    end_at: endDate.toISOString(),
+    location_type: input.locationType ?? "INTERNAL",
+    location_display_name: input.locationDisplayName ?? null,
+    created_by: input.createdBy
+  };
+
+  if (input.dressCode) {
+    insertPayload.dress_code = input.dressCode;
+  }
+
+  if (input.note) {
+    insertPayload.note = input.note;
+  }
+
+  if (input.taskDetails) {
+    insertPayload.task_details = input.taskDetails;
+  }
+
   const { data, error } = await supabaseAdmin
     .from("calendar_events")
-    .insert({
-      title: input.title,
-      description: input.description ?? null,
-      dress_code: input.dressCode ?? null,
-      note: input.note ?? null,
-      task_details: input.taskDetails ?? null,
-      start_at: startDate.toISOString(),
-      end_at: endDate.toISOString(),
-      location_type: input.locationType ?? "INTERNAL",
-      location_display_name: input.locationDisplayName ?? null,
-      created_by: input.createdBy
-    })
+    .insert(insertPayload)
     .select("*")
     .single();
 
