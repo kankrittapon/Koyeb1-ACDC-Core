@@ -19,6 +19,8 @@
     "googleapis": "^153.0.0",
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^4.2.1",
+    "playwright-core": "^1.55.0",
+    "qrcode": "^1.5.4",
     "zod": "^4.1.11"
   },
   "devDependencies": {
@@ -26,6 +28,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.7.2",
     "@types/node-cron": "^3.0.11",
+    "@types/qrcode": "^1.5.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }

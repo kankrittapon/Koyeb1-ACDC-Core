@@ -2,6 +2,7 @@ FROM node:22-alpine AS base
 WORKDIR /app
 
 RUN apk add --no-cache \
+  chromium \
   python3 \
   py3-pip \
   py3-pillow \
