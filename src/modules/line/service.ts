@@ -1,4 +1,5 @@
 import { Client, middleware, MiddlewareConfig, WebhookEvent } from "@line/bot-sdk";
+import { NextFunction, Request, Response } from "express";
 import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
 import { requestGatewayChat } from "../ai-gateway/client";
@@ -9,12 +10,18 @@ const lineConfig: MiddlewareConfig = {
   channelSecret: config.LINE_CHANNEL_SECRET ?? ""
 };
 
-export const lineMiddleware = middleware(lineConfig);
+export const lineMiddleware =
+  config.ENABLE_LINE_WEBHOOK && config.LINE_CHANNEL_SECRET
+    ? middleware(lineConfig)
+    : (_req: Request, _res: Response, next: NextFunction) => next();
 
-const lineClient = new Client({
-  channelAccessToken: config.LINE_CHANNEL_ACCESS_TOKEN ?? "",
-  channelSecret: config.LINE_CHANNEL_SECRET ?? ""
-});
+const lineClient =
+  config.LINE_CHANNEL_ACCESS_TOKEN && config.LINE_CHANNEL_SECRET
+    ? new Client({
+        channelAccessToken: config.LINE_CHANNEL_ACCESS_TOKEN,
+        channelSecret: config.LINE_CHANNEL_SECRET
+      })
+    : null;
 
 const researchKeywords = [
   "ค้นหา",
@@ -33,6 +40,14 @@ const fileContextCache = new Map<
   string,
   { fileName: string; fileUrl: string; mimeType: string; timestamp: number }
 >();
+
+function getLineClient(): Client {
+  if (!lineClient) {
+    throw new Error("LINE client is not configured");
+  }
+
+  return lineClient;
+}
 
 function isResearchRequest(text: string): boolean {
   return researchKeywords.some((keyword) => text.includes(keyword));
@@ -96,7 +111,7 @@ async function logWebhookEvent(event: WebhookEvent, status: string): Promise<voi
 }
 
 async function ensureLineUser(lineUserId: string) {
-  const profile = await lineClient.getProfile(lineUserId);
+  const profile = await getLineClient().getProfile(lineUserId);
 
   const { data: existingUser, error: fetchError } = await supabaseAdmin
     .from("users")
@@ -200,14 +215,14 @@ function getDriveFolderId(role: string, mimeType: string): string | undefined {
 }
 
 export async function pushTextMessage(lineUserId: string, text: string): Promise<void> {
-  await lineClient.pushMessage(lineUserId, {
+  await getLineClient().pushMessage(lineUserId, {
     type: "text",
     text
   });
 }
 
 async function replyText(replyToken: string, text: string): Promise<void> {
-  await lineClient.replyMessage(replyToken, {
+  await getLineClient().replyMessage(replyToken, {
     type: "text",
     text
   });
@@ -424,7 +439,7 @@ async function createScheduleCard(lineUserId: string, requestedByUserId: string 
     throw new Error("PUBLIC_BASE_URL is required to send schedule card images");
   }
 
-  await lineClient.pushMessage(lineUserId, {
+  await getLineClient().pushMessage(lineUserId, {
     type: "image",
     originalContentUrl: imageUrl,
     previewImageUrl: imageUrl
@@ -509,7 +524,7 @@ async function handleBinaryUpload(
   user: { id: string | null; role: string },
   lineUserId: string
 ) {
-  const fileStream = await lineClient.getMessageContent(event.message.id);
+  const fileStream = await getLineClient().getMessageContent(event.message.id);
   const isImage = event.message.type === "image";
   const fileName = isImage
     ? `upload_${Date.now()}.jpg`
