@@ -48,6 +48,8 @@ const researchKeywords = [
 const calendarManagerRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const summaryRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const staffMessagingRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
+const acknowledgementRequesterRoles = new Set(["BOSS"]);
+const acknowledgementTargetRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
 const weekdayMap = new Map<string, number>([
   ["อาทิตย์", 0],
   ["วันอาทิตย์", 0],
@@ -139,6 +141,15 @@ type UploadSuccessCardInput = {
   driveFailed?: boolean;
 };
 
+type AcknowledgementAction = "acknowledged" | "outside";
+
+type AcknowledgementRequestInput = {
+  requestId: string;
+  requesterRole: string;
+  requesterDisplayName: string;
+  targetDisplayName: string;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -196,6 +207,14 @@ function canRequestSummary(role: string): boolean {
 
 function canMessageStaff(role: string): boolean {
   return staffMessagingRoles.has(role.toUpperCase());
+}
+
+function canRequestAcknowledgement(role: string): boolean {
+  return acknowledgementRequesterRoles.has(role.toUpperCase());
+}
+
+function canReceiveAcknowledgement(role: string): boolean {
+  return acknowledgementTargetRoles.has(role.toUpperCase());
 }
 
 function parseDateInput(input: string, endOfDay = false): Date | null {
@@ -1198,6 +1217,106 @@ function inferFlexOptions(text: string, overrides: FlexMessageOptions = {}): Fle
   return { ...overrides, title: "ACDC Assistant", accentColor: "#3b7a57" };
 }
 
+function resolveUserDisplayName(user: {
+  nickname?: string | null;
+  line_display_name?: string | null;
+  username?: string | null;
+  role?: string | null;
+}) {
+  return user.nickname ?? user.line_display_name ?? user.username ?? user.role ?? "เจ้าหน้าที่";
+}
+
+function buildAcknowledgementFlexMessage(input: AcknowledgementRequestInput) {
+  const actions = [
+    {
+      type: "button",
+      style: "primary",
+      color: "#15803d",
+      action: {
+        type: "postback" as const,
+        label: "ทราบครับ",
+        data: `ack|${input.requestId}|acknowledged`,
+        displayText: "ทราบครับ"
+      }
+    },
+    {
+      type: "button",
+      style: "secondary",
+      action: {
+        type: "postback" as const,
+        label: "ขออภัยครับ ตอนนี้อยู่ด้านนอก",
+        data: `ack|${input.requestId}|outside`,
+        displayText: "ขออภัยครับ ตอนนี้อยู่ด้านนอก"
+      }
+    }
+  ];
+
+  return {
+    type: "flex" as const,
+    altText: `คำสั่งเรียกจาก ${input.requesterDisplayName}`,
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: "#1d4ed8",
+        contents: [
+          {
+            type: "text" as const,
+            text: "คำสั่งเรียก",
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text" as const,
+            text: `${input.requesterRole} เรียก ${input.targetDisplayName}`,
+            wrap: true,
+            weight: "bold",
+            size: "md",
+            color: "#111827"
+          },
+          {
+            type: "text" as const,
+            text: `ผู้เรียก: ${input.requesterDisplayName}`,
+            wrap: true,
+            size: "sm",
+            color: "#475569"
+          },
+          {
+            type: "separator" as const,
+            margin: "sm"
+          },
+          {
+            type: "text" as const,
+            text: "กรุณาตอบรับสถานะเพื่อให้ระบบแจ้งกลับหาผู้พันทันที",
+            wrap: true,
+            size: "sm",
+            color: "#111827"
+          }
+        ]
+      },
+      footer: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: actions
+      }
+    }
+  } as any;
+}
+
 function buildFileDeliveryFlexMessage(input: FileDeliveryCardInput) {
   const actions: any[] = [
     {
@@ -1550,6 +1669,146 @@ async function sendStaffMessage(input: {
   });
 
   return `✅ ส่งไฟล์และข้อความถึง ${targetUser.nickname ?? targetUser.line_display_name ?? targetUser.username ?? input.target} เรียบร้อยแล้ว`;
+}
+
+function normalizeAcknowledgementTarget(target: string): string {
+  return target
+    .trim()
+    .replace(/\s*(ให้หน่อย|ให้ที|หน่อยครับ|หน่อยค่ะ|หน่อยคะ|หน่อย|ทีนะ|ที)$/i, "")
+    .trim();
+}
+
+async function sendAcknowledgementRequest(input: {
+  senderUserId: string | null;
+  senderRole: string;
+  senderDisplayName: string;
+  target: string;
+}) {
+  const normalizedTarget = normalizeAcknowledgementTarget(input.target);
+  if (!normalizedTarget) {
+    return "⚠️ ระบุผู้รับคำสั่งก่อนครับ เช่น เรียก นยก";
+  }
+
+  const targetUser = await findStaffUser(normalizedTarget);
+  if (!targetUser || !targetUser.line_user_id) {
+    return `⚠️ ไม่พบบุคคลที่สามารถรับคำสั่งได้จากคำว่า "${normalizedTarget}"`;
+  }
+
+  if (!canReceiveAcknowledgement(targetUser.role)) {
+    return `⚠️ คำสั่งเรียกแบบตอบรับด่วนรองรับเฉพาะ นยก / นกบ / นกพ / นกง ตอนนี้ ${resolveUserDisplayName(targetUser)} ยังไม่อยู่ในกลุ่มนี้ครับ`;
+  }
+
+  const message = `ผู้พันเรียก ${resolveUserDisplayName(targetUser)}`;
+  const insertResult = await supabaseAdmin
+    .from("staff_messages")
+    .insert({
+      sender_user_id: input.senderUserId,
+      target_user_id: targetUser.id,
+      target_line_user_id: targetUser.line_user_id,
+      message,
+      status: "awaiting_ack",
+      sent_at: new Date().toISOString()
+    })
+    .select("id")
+    .single();
+
+  if (insertResult.error) {
+    throw insertResult.error;
+  }
+
+  await getLineClient().pushMessage(
+    targetUser.line_user_id,
+    buildAcknowledgementFlexMessage({
+      requestId: insertResult.data.id,
+      requesterRole: input.senderRole,
+      requesterDisplayName: input.senderDisplayName,
+      targetDisplayName: resolveUserDisplayName(targetUser)
+    })
+  );
+
+  return `✅ ส่งคำสั่งเรียกถึง ${resolveUserDisplayName(targetUser)} แล้ว ระบบจะรอการตอบรับครับ`;
+}
+
+async function handleAcknowledgementPostback(
+  event: WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
+) {
+  const lineUserId = event.source.userId;
+  if (!lineUserId) {
+    return;
+  }
+
+  const match = event.postback.data.match(/^ack\|([^|]+)\|(acknowledged|outside)$/);
+  if (!match) {
+    await replyText(event.replyToken, "⚠️ รูปแบบการตอบรับไม่ถูกต้องครับ");
+    return;
+  }
+
+  const [, requestId, action] = match as [string, string, AcknowledgementAction];
+  const actingUser = await ensureLineUser(lineUserId);
+  const { data: staffMessage, error } = await supabaseAdmin
+    .from("staff_messages")
+    .select("id, sender_user_id, target_user_id, target_line_user_id, message, status")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!staffMessage || staffMessage.target_line_user_id !== lineUserId) {
+    await replyText(event.replyToken, "⚠️ ไม่พบคำสั่งที่ต้องตอบรับรายการนี้ครับ");
+    return;
+  }
+
+  if (staffMessage.status !== "awaiting_ack") {
+    await replyText(event.replyToken, "ℹ️ รายการนี้ถูกตอบรับไปแล้วครับ");
+    return;
+  }
+
+  const nextStatus = action === "acknowledged" ? "acknowledged" : "outside";
+  const targetDisplayName = resolveUserDisplayName(actingUser);
+  const acknowledgementText =
+    action === "acknowledged" ? `${targetDisplayName}: ทราบครับ` : `${targetDisplayName}: ขออภัยครับ ตอนนี้อยู่ด้านนอก`;
+
+  const updateResult = await supabaseAdmin
+    .from("staff_messages")
+    .update({
+      status: nextStatus,
+      message: `${staffMessage.message}\n${acknowledgementText}`
+    })
+    .eq("id", requestId);
+
+  if (updateResult.error) {
+    throw updateResult.error;
+  }
+
+  if (staffMessage.sender_user_id) {
+    const senderLookup = await supabaseAdmin
+      .from("users")
+      .select("line_user_id")
+      .eq("id", staffMessage.sender_user_id)
+      .maybeSingle();
+
+    if (!senderLookup.error && senderLookup.data?.line_user_id) {
+      const bossNotice =
+        action === "acknowledged"
+          ? `✅ ${targetDisplayName} ตอบรับแล้ว: ทราบครับ`
+          : `⚠️ ${targetDisplayName} แจ้งว่า: ขออภัยครับ ตอนนี้อยู่ด้านนอก`;
+      await pushTextMessage(senderLookup.data.line_user_id, bossNotice, {
+        title: "ตอบรับคำสั่ง",
+        accentColor: action === "acknowledged" ? "#15803d" : "#b45309"
+      });
+    }
+  }
+
+  const replyMessage =
+    action === "acknowledged"
+      ? "✅ ระบบแจ้งกลับหาผู้พันแล้ว: ทราบครับ"
+      : "✅ ระบบแจ้งกลับหาผู้พันแล้ว: ขออภัยครับ ตอนนี้อยู่ด้านนอก";
+  await replyText(event.replyToken, replyMessage, {
+    title: "ตอบรับคำสั่ง",
+    accentColor: action === "acknowledged" ? "#15803d" : "#b45309"
+  });
 }
 
 async function createCalendarEventFromCommand(input: {
@@ -1928,6 +2187,32 @@ async function tryHandleCommand(input: {
     });
   }
 
+  const acknowledgementMatch = trimmed.match(/^เรียก\s*(.+)$/i);
+  if (acknowledgementMatch) {
+    if (!canRequestAcknowledgement(input.user.role)) {
+      return "⚠️ ตอนนี้คำสั่งเรียกพร้อมปุ่มตอบรับเปิดให้เฉพาะผู้พันครับ";
+    }
+
+    const senderLookup = input.user.id
+      ? await supabaseAdmin
+          .from("users")
+          .select("nickname, line_display_name, username")
+          .eq("id", input.user.id)
+          .maybeSingle()
+      : null;
+
+    if (senderLookup?.error) {
+      throw senderLookup.error;
+    }
+
+    return sendAcknowledgementRequest({
+      senderUserId: input.user.id,
+      senderRole: input.user.role,
+      senderDisplayName: resolveUserDisplayName(senderLookup?.data ?? { role: input.user.role }),
+      target: acknowledgementMatch[1].trim()
+    });
+  }
+
   const staffFileMatch =
     trimmed.match(/^ส่งไฟล์(?:นี้)?ให้\s*(.+?)\s+(.+)$/i) ??
     trimmed.match(/^(.+?\.[a-z0-9]{2,6})\s+ส่งไฟล์(?:นี้)?ให้\s*(.+?)\s+(.+)$/i);
@@ -2154,6 +2439,14 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
 
 export async function handleLineEvent(event: WebhookEvent): Promise<void> {
   await logWebhookEvent(event, "received");
+
+  if (event.type === "postback") {
+    await handleAcknowledgementPostback(
+      event as WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
+    );
+    await logWebhookEvent(event, "processed");
+    return;
+  }
 
   if (event.type === "message" && event.message.type === "text") {
     await handleTextMessage(event as WebhookEvent & { type: "message"; message: { type: "text"; text: string } });
