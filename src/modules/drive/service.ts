@@ -5,9 +5,9 @@ let cachedDriveClient: ReturnType<typeof google.drive> | null = null;
 
 function ensureDriveConfig(): void {
   if (
-    !config.GOOGLE_DRIVE_CLIENT_ID ||
-    !config.GOOGLE_DRIVE_CLIENT_SECRET ||
-    !config.GOOGLE_DRIVE_REFRESH_TOKEN
+    !(config.GOOGLE_DRIVE_CLIENT_ID || config.GDRIVE_CLIENT_ID) ||
+    !(config.GOOGLE_DRIVE_CLIENT_SECRET || config.GDRIVE_CLIENT_SECRET) ||
+    !(config.GOOGLE_DRIVE_REFRESH_TOKEN || config.GDRIVE_REFRESH_TOKEN)
   ) {
     throw new Error("Google Drive credentials are not configured");
   }
@@ -21,13 +21,13 @@ async function getDriveClient() {
   ensureDriveConfig();
 
   const oauthClient = new google.auth.OAuth2(
-    config.GOOGLE_DRIVE_CLIENT_ID,
-    config.GOOGLE_DRIVE_CLIENT_SECRET,
+    config.GOOGLE_DRIVE_CLIENT_ID || config.GDRIVE_CLIENT_ID,
+    config.GOOGLE_DRIVE_CLIENT_SECRET || config.GDRIVE_CLIENT_SECRET,
     "https://developers.google.com/oauthplayground"
   );
 
   oauthClient.setCredentials({
-    refresh_token: config.GOOGLE_DRIVE_REFRESH_TOKEN
+    refresh_token: config.GOOGLE_DRIVE_REFRESH_TOKEN || config.GDRIVE_REFRESH_TOKEN
   });
 
   cachedDriveClient = google.drive({

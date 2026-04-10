@@ -384,6 +384,26 @@ function parseTimeRangeInput(input: string): {
   };
 }
 
+function inferMimeTypeFromFileName(fileName: string): string {
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+  const byExtension: Record<string, string> = {
+    pdf: "application/pdf",
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ppt: "application/vnd.ms-powerpoint",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    txt: "text/plain",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp"
+  };
+
+  return byExtension[ext] ?? "application/octet-stream";
+}
+
 function resolveDayExpression(dayInput: string, now = new Date()): BangkokDateParts | null {
   const trimmed = dayInput.trim().toLowerCase();
   const baseParts = getBangkokDateParts(now);
@@ -996,19 +1016,19 @@ function getDriveFolderId(role: string, mimeType: string): string | undefined {
   const normalizedRole = role.toUpperCase();
 
   const roleRootMap: Record<string, string | undefined> = {
-    BOSS: config.GOOGLE_DRIVE_BOSS_ROOT_FOLDER,
-    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_ROOT_FOLDER,
-    ADMIN: config.GOOGLE_DRIVE_ADMIN_ROOT_FOLDER,
-    USER: config.GOOGLE_DRIVE_USER_ROOT_FOLDER,
-    GUEST: config.GOOGLE_DRIVE_GUEST_ROOT_FOLDER
+    BOSS: config.GOOGLE_DRIVE_BOSS_ROOT_FOLDER || config.GDRIVE_BOSS_ROOT,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_ROOT_FOLDER || config.GDRIVE_SECRETARY_ROOT,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_ROOT_FOLDER || config.GDRIVE_ADMIN_ROOT,
+    USER: config.GOOGLE_DRIVE_USER_ROOT_FOLDER || config.GDRIVE_USER_ROOT,
+    GUEST: config.GOOGLE_DRIVE_GUEST_ROOT_FOLDER || config.GDRIVE_GUEST_ROOT
   };
 
   const roleImageMap: Record<string, string | undefined> = {
-    BOSS: config.GOOGLE_DRIVE_BOSS_IMAGE_FOLDER,
-    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_IMAGE_FOLDER,
-    ADMIN: config.GOOGLE_DRIVE_ADMIN_IMAGE_FOLDER,
-    USER: config.GOOGLE_DRIVE_USER_IMAGE_FOLDER,
-    GUEST: config.GOOGLE_DRIVE_GUEST_IMAGE_FOLDER
+    BOSS: config.GOOGLE_DRIVE_BOSS_IMAGE_FOLDER || config.GDRIVE_BOSS_PICTURE,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_IMAGE_FOLDER || config.GDRIVE_SECRETARY_PICTURE,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_IMAGE_FOLDER || config.GDRIVE_ADMIN_PICTURE,
+    USER: config.GOOGLE_DRIVE_USER_IMAGE_FOLDER || config.GDRIVE_USER_PICTURE,
+    GUEST: config.GOOGLE_DRIVE_GUEST_IMAGE_FOLDER || config.GDRIVE_GUEST_PICTURE
   };
 
   const roleFileMap: Record<string, string | undefined> = {
@@ -1019,20 +1039,74 @@ function getDriveFolderId(role: string, mimeType: string): string | undefined {
     GUEST: config.GOOGLE_DRIVE_GUEST_FILE_FOLDER
   };
 
+  const roleDocMap: Record<string, string | undefined> = {
+    BOSS: config.GOOGLE_DRIVE_BOSS_DOC_FOLDER || config.GDRIVE_BOSS_DOC,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_DOC_FOLDER || config.GDRIVE_SECRETARY_DOC,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_DOC_FOLDER || config.GDRIVE_ADMIN_DOC,
+    USER: config.GOOGLE_DRIVE_USER_DOC_FOLDER || config.GDRIVE_USER_DOC,
+    GUEST: config.GOOGLE_DRIVE_GUEST_DOC_FOLDER || config.GDRIVE_GUEST_DOC
+  };
+
+  const rolePdfMap: Record<string, string | undefined> = {
+    BOSS: config.GOOGLE_DRIVE_BOSS_PDF_FOLDER || config.GDRIVE_BOSS_PDF,
+    SECRETARY: config.GOOGLE_DRIVE_SECRETARY_PDF_FOLDER || config.GDRIVE_SECRETARY_PDF,
+    ADMIN: config.GOOGLE_DRIVE_ADMIN_PDF_FOLDER || config.GDRIVE_ADMIN_PDF,
+    USER: config.GOOGLE_DRIVE_USER_PDF_FOLDER || config.GDRIVE_USER_PDF,
+    GUEST: config.GOOGLE_DRIVE_GUEST_PDF_FOLDER || config.GDRIVE_GUEST_PDF
+  };
+
+  const genericRoot =
+    config.GOOGLE_DRIVE_ROOT_FOLDER || config.GDRIVE_ROOT;
+  const genericImage =
+    config.GOOGLE_DRIVE_IMAGE_FOLDER || config.GDRIVE_PICTURE;
+  const genericFile = config.GOOGLE_DRIVE_FILE_FOLDER;
+  const genericDoc = config.GOOGLE_DRIVE_DOC_FOLDER || config.GDRIVE_DOC;
+  const genericPdf = config.GOOGLE_DRIVE_PDF_FOLDER || config.GDRIVE_PDF;
+
   if (mimeType.startsWith("image/")) {
     return (
       roleImageMap[normalizedRole] ??
-      config.GOOGLE_DRIVE_IMAGE_FOLDER ??
+      genericImage ??
       roleRootMap[normalizedRole] ??
-      config.GOOGLE_DRIVE_ROOT_FOLDER
+      genericRoot
+    );
+  }
+
+  if (mimeType.includes("pdf")) {
+    return (
+      rolePdfMap[normalizedRole] ??
+      genericPdf ??
+      roleFileMap[normalizedRole] ??
+      roleRootMap[normalizedRole] ??
+      genericFile ??
+      genericRoot
+    );
+  }
+
+  if (
+    mimeType.includes("word") ||
+    mimeType.includes("document") ||
+    mimeType.includes("sheet") ||
+    mimeType.includes("excel") ||
+    mimeType.includes("presentation") ||
+    mimeType.includes("powerpoint") ||
+    mimeType === "text/plain"
+  ) {
+    return (
+      roleDocMap[normalizedRole] ??
+      genericDoc ??
+      roleFileMap[normalizedRole] ??
+      roleRootMap[normalizedRole] ??
+      genericFile ??
+      genericRoot
     );
   }
 
   return (
     roleFileMap[normalizedRole] ??
-    config.GOOGLE_DRIVE_FILE_FOLDER ??
+    genericFile ??
     roleRootMap[normalizedRole] ??
-    config.GOOGLE_DRIVE_ROOT_FOLDER
+    genericRoot
   );
 }
 
@@ -1891,7 +1965,7 @@ async function handleBinaryUpload(
   const originalFileName = isImage
     ? `upload_${Date.now()}.jpg`
     : event.message.fileName ?? `file_${Date.now()}`;
-  const mimeType = isImage ? "image/jpeg" : "application/octet-stream";
+  const mimeType = isImage ? "image/jpeg" : inferMimeTypeFromFileName(originalFileName);
 
   const storedLocalFile = await saveIncomingFileToDisk({
     buffer: fileBuffer,
