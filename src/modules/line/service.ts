@@ -250,6 +250,20 @@ function refreshAIMode(lineUserId: string): void {
   }
 }
 
+function getAiModeExpiresAt(lineUserId: string): number | null {
+  const expiresAt = aiModeState.get(lineUserId);
+  if (!expiresAt || expiresAt <= Date.now()) {
+    return null;
+  }
+  return expiresAt;
+}
+
+function clearTransientUserState(lineUserId: string): void {
+  clearAIMode(lineUserId);
+  fileContextCache.delete(lineUserId);
+  pendingRejectReviewState.delete(lineUserId);
+}
+
 function canManageCalendar(role: string): boolean {
   return calendarManagerRoles.has(role.toUpperCase());
 }
@@ -3066,6 +3080,61 @@ async function tryHandleCommand(input: {
   lineUserId: string;
 }): Promise<string | null> {
   const trimmed = normalizeTextCommand(input.text);
+
+  if (trimmed === "/clear") {
+    clearTransientUserState(input.lineUserId);
+    return [
+      "🧹 ล้างสถานะชั่วคราวให้แล้วครับ",
+      "",
+      "สิ่งที่ถูกล้าง:",
+      "- AI Mode",
+      "- file context ล่าสุดใน memory",
+      "- pending reject/review state",
+      "",
+      "หมายเหตุ: ไม่ได้ลบข้อมูลจริงในฐานข้อมูล และไม่ได้ลบไฟล์หรือ job ถาวรครับ"
+    ].join("\n");
+  }
+
+  if (trimmed === "/status") {
+    const [latestFile, pendingCardsResponse] = await Promise.all([
+      getLatestUploadedFileForLineUser(input.lineUserId),
+      supabaseAdmin
+        .from("generated_cards")
+        .select("id", { count: "exact", head: true })
+        .eq("requested_by_user_id", input.user.id ?? "")
+        .eq("status", "pending")
+    ]);
+
+    const aiModeExpiresAt = getAiModeExpiresAt(input.lineUserId);
+    const cachedFile = fileContextCache.get(input.lineUserId);
+    const pendingRejectReview = pendingRejectReviewState.get(input.lineUserId);
+    const pendingCards = pendingCardsResponse.count ?? 0;
+
+    const statusLines = [
+      "📊 สถานะระบบของผู้ใช้",
+      "",
+      `บทบาท: ${input.user.role}`,
+      `AI Mode: ${aiModeExpiresAt ? `เปิดอยู่ (หมดอายุ ${new Date(aiModeExpiresAt).toLocaleTimeString("th-TH", { timeZone: config.APP_TIMEZONE })})` : "ปิดอยู่"}`,
+      `file context ใน memory: ${cachedFile ? cachedFile.originalFileName ?? cachedFile.fileName : "ไม่มี"}`,
+      `ไฟล์ล่าสุดในระบบ: ${latestFile ? latestFile.originalFileName ?? latestFile.fileName : "ไม่มี"}`,
+      `extraction ล่าสุด: ${latestFile?.extractionStatus ?? "ไม่มี"}`,
+      `pending reject/review state: ${pendingRejectReview ? "มี" : "ไม่มี"}`,
+      `pending generated cards: ${pendingCards}`
+    ];
+
+    if (latestFile?.reviewStatus) {
+      statusLines.push(`review status ล่าสุด: ${latestFile.reviewStatus}`);
+    }
+    if (latestFile?.driveSyncStatus) {
+      statusLines.push(`Drive sync ล่าสุด: ${latestFile.driveSyncStatus}`);
+    }
+    if (latestFile?.extractionError) {
+      statusLines.push(`extraction note: ${latestFile.extractionError}`);
+    }
+
+    statusLines.push("", "ถ้ารู้สึกว่างานเก่าค้าง ลองใช้ /clear เพื่อล้าง state ชั่วคราวได้ครับ");
+    return statusLines.join("\n");
+  }
 
   if (trimmed === "/event today") {
     const range = getRangeFromPreset("today");
