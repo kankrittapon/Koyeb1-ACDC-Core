@@ -52,6 +52,22 @@ const summaryRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const staffMessagingRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const acknowledgementRequesterRoles = new Set(["BOSS"]);
 const acknowledgementTargetRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
+const roleKeywordMap = new Map<string, string>([
+  ["นยก", "NYK"],
+  ["นายทหารยุทธการ", "NYK"],
+  ["นกบ", "NKB"],
+  ["นายทหารส่งกำลังบำรุง", "NKB"],
+  ["นกพ", "NPK"],
+  ["นายทหารกำลังพล", "NPK"],
+  ["นกง", "NNG"],
+  ["นายทหารการเงิน", "NNG"],
+  ["เลขา", "SECRETARY"],
+  ["ผู้ช่วย", "SECRETARY"],
+  ["หน้าห้อง", "SECRETARY"],
+  ["secretary", "SECRETARY"],
+  ["ผู้พัน", "BOSS"],
+  ["boss", "BOSS"]
+]);
 const secretaryRoles = new Set(["SECRETARY"]);
 const fileReviewSubmitterRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
 const aiEnabledRoles = new Set(["BOSS", "SECRETARY", "ADMIN", "USER"]);
@@ -903,6 +919,11 @@ function matchesSummaryIntent(text: string, dateToken: string): boolean {
   );
 }
 
+function resolveRoleKeyword(target: string): string | null {
+  const normalized = target.trim().toLowerCase();
+  return roleKeywordMap.get(normalized) ?? null;
+}
+
 function normalizeTextCommand(text: string): string {
   const trimmed = text.trim();
   const compact = normalizeCompactThai(trimmed);
@@ -983,6 +1004,18 @@ function normalizeTextCommand(text: string): string {
     trimmed.match(/^บอก(?:หา|ให้)?\s*(.+?)\s+ว่า\s+(.+)$/i);
   if (staffNaturalMatch) {
     return `/staff send | ${staffNaturalMatch[1].trim()} | ${staffNaturalMatch[2].trim()}`;
+  }
+
+  const directStaffNaturalMatch =
+    trimmed.match(/^ส่งข้อความ(?:หา|ให้)\s*(.+?)\s+(.+)$/i) ??
+    trimmed.match(/^ฝากข้อความ(?:หา|ให้)\s*(.+?)\s+(.+)$/i) ??
+    trimmed.match(/^ฝากบอก\s*(.+?)\s+(.+)$/i);
+  if (
+    directStaffNaturalMatch &&
+    !/^(.+?)\s+ว่า$/i.test(trimmed) &&
+    !/^ส่งข้อความให้(?:โรล|role)/i.test(trimmed)
+  ) {
+    return `/staff send | ${directStaffNaturalMatch[1].trim()} | ${directStaffNaturalMatch[2].trim()}`;
   }
 
   const roleStaffMatch = trimmed.match(/^ส่งข้อความให้(?:โรล|role)\s*(.+?)\s+ว่า\s+(.+)$/i);
@@ -1847,6 +1880,23 @@ async function getAIContextConfig(role: string) {
 }
 
 async function findStaffUser(target: string) {
+  const roleKeyword = resolveRoleKeyword(target);
+  if (roleKeyword) {
+    const byRoleKeyword = await supabaseAdmin
+      .from("users")
+      .select("id, username, role, line_user_id, line_display_name, nickname")
+      .eq("role", roleKeyword)
+      .limit(1);
+
+    if (byRoleKeyword.error) {
+      throw byRoleKeyword.error;
+    }
+
+    if (byRoleKeyword.data?.[0]) {
+      return byRoleKeyword.data[0];
+    }
+  }
+
   const aliasLookup = await supabaseAdmin
     .from("user_aliases")
     .select("user_id, alias")
@@ -1885,6 +1935,18 @@ async function findStaffUser(target: string) {
   }
 
   return data?.[0] ?? null;
+}
+
+function shouldRouteAiPromptToQuickAction(prompt: string): boolean {
+  const normalized = normalizeTextCommand(prompt);
+  return (
+    normalized.startsWith("/event ") ||
+    normalized.startsWith("/summary ") ||
+    normalized.startsWith("/card ") ||
+    normalized.startsWith("/staff send ") ||
+    normalized.startsWith("/clarify day ") ||
+    normalized.startsWith("เรียก ")
+  );
 }
 
 async function sendStaffMessage(input: {
@@ -2912,6 +2974,30 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
       return;
     }
 
+    if (shouldRouteAiPromptToQuickAction(prompt)) {
+      const quickActionResult = await tryHandleCommand({
+        text: prompt,
+        user: {
+          id: user.id,
+          role: user.role,
+          nickname: user.nickname ?? null,
+          line_display_name: user.line_display_name ?? null,
+          username: user.username ?? null
+        },
+        lineUserId
+      });
+
+      if (quickActionResult) {
+        clearAIMode(lineUserId);
+        await logConversation(lineUserId, user.id, text, quickActionResult);
+        await replyText(event.replyToken, quickActionResult, {
+          title: "Quick Action",
+          accentColor: "#2563eb"
+        });
+        return;
+      }
+    }
+
     const aiContextConfig = await getAIContextConfig(user.role);
     const result = await requestGatewayChat({
       prompt,
@@ -2944,6 +3030,30 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
         accentColor: "#b45309"
       });
       return;
+    }
+
+    if (shouldRouteAiPromptToQuickAction(trimmed)) {
+      clearAIMode(lineUserId);
+      const quickActionResult = await tryHandleCommand({
+        text: trimmed,
+        user: {
+          id: user.id,
+          role: user.role,
+          nickname: user.nickname ?? null,
+          line_display_name: user.line_display_name ?? null,
+          username: user.username ?? null
+        },
+        lineUserId
+      });
+
+      if (quickActionResult) {
+        await logConversation(lineUserId, user.id, text, quickActionResult);
+        await replyText(event.replyToken, quickActionResult, {
+          title: "Quick Action",
+          accentColor: "#2563eb"
+        });
+        return;
+      }
     }
 
     refreshAIMode(lineUserId);
