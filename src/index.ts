@@ -93,7 +93,7 @@ app.get("/f/:id", async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("uploaded_files")
-      .select("id, drive_url, local_disk_url")
+      .select("id, file_name, mime_type, drive_url, local_disk_url, local_disk_path")
       .eq("id", req.params.id)
       .maybeSingle();
 
@@ -105,12 +105,20 @@ app.get("/f/:id", async (req, res, next) => {
       return res.status(404).json({ error: "File not found" });
     }
 
-    const target = data.local_disk_url || data.drive_url;
-    if (!target) {
-      return res.status(404).json({ error: "File URL not available" });
+    if (data.local_disk_path && fs.existsSync(data.local_disk_path)) {
+      if (data.mime_type) {
+        res.type(data.mime_type);
+      }
+      const downloadName = data.file_name ?? "download";
+      return res.download(data.local_disk_path, downloadName);
     }
 
-    return res.redirect(302, encodeURI(target));
+    const target = data.drive_url || data.local_disk_url;
+    if (target) {
+      return res.redirect(302, encodeURI(target));
+    }
+
+    return res.status(404).json({ error: "File URL not available" });
   } catch (error) {
     return next(error);
   }
