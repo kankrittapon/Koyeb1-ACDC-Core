@@ -1,6 +1,8 @@
 import json
 import re
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -11,6 +13,7 @@ from pypdf import PdfReader
 MAX_PREVIEW_CHARS = 4000
 MAX_SUMMARY_CHARS = 280
 MAX_PDF_PAGES = 5
+MAX_OCR_PAGES = 3
 
 
 def normalize_text(text: str) -> str:
@@ -40,6 +43,56 @@ def extract_pdf(file_path: Path) -> tuple[str | None, int | None]:
             break
     preview = normalize_text("\n\n".join(texts))
     return (preview or None, page_count)
+
+
+def run_tesseract(image_path: Path) -> str:
+    process = subprocess.run(
+        ["tesseract", str(image_path), "stdout", "-l", "tha+eng"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise RuntimeError(process.stderr.strip() or "tesseract OCR failed")
+    return process.stdout
+
+
+def extract_image_ocr(file_path: Path) -> tuple[str | None, int | None]:
+    preview = normalize_text(run_tesseract(file_path))
+    return (preview or None, 1)
+
+
+def extract_pdf_ocr(file_path: Path, page_count: int) -> tuple[str | None, int | None]:
+    with tempfile.TemporaryDirectory(prefix="acdc-pdf-ocr-") as temp_dir:
+        output_prefix = Path(temp_dir) / "page"
+        process = subprocess.run(
+            [
+                "pdftoppm",
+                "-f",
+                "1",
+                "-l",
+                str(min(page_count, MAX_OCR_PAGES)),
+                "-png",
+                str(file_path),
+                str(output_prefix),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if process.returncode != 0:
+            raise RuntimeError(process.stderr.strip() or "pdftoppm failed")
+
+        texts: list[str] = []
+        for image_path in sorted(Path(temp_dir).glob("page-*.png")):
+            extracted = run_tesseract(image_path)
+            if extracted.strip():
+                texts.append(extracted)
+            if sum(len(item) for item in texts) >= MAX_PREVIEW_CHARS:
+                break
+
+        preview = normalize_text("\n\n".join(texts))
+        return (preview or None, page_count)
 
 
 def extract_docx(file_path: Path) -> tuple[str | None, int | None]:
@@ -72,8 +125,12 @@ def main() -> int:
     try:
         if ext == ".pdf":
             preview_text, page_count = extract_pdf(file_path)
+            if not preview_text:
+                preview_text, page_count = extract_pdf_ocr(file_path, page_count or MAX_OCR_PAGES)
         elif ext == ".docx":
             preview_text, page_count = extract_docx(file_path)
+        elif ext in {".jpg", ".jpeg", ".png", ".webp"}:
+            preview_text, page_count = extract_image_ocr(file_path)
         else:
             result = {
                 "preview_text": None,

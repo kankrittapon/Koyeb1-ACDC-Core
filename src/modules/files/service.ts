@@ -138,8 +138,10 @@ function canExtractStructuredDocumentPreview(fileName: string, mimeType: string)
   return (
     normalizedMime.includes("pdf") ||
     normalizedMime.includes("wordprocessingml.document") ||
+    normalizedMime.startsWith("image/") ||
     ext === ".pdf" ||
-    ext === ".docx"
+    ext === ".docx" ||
+    [".jpg", ".jpeg", ".png", ".webp"].includes(ext)
   );
 }
 

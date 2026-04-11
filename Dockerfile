@@ -9,6 +9,10 @@ RUN apk add --no-cache \
   py3-qrcode \
   py3-cairo \
   py3-gobject3 \
+  poppler-utils \
+  tesseract-ocr \
+  tesseract-ocr-data-eng \
+  tesseract-ocr-data-tha \
   fontconfig \
   font-noto-thai \
   pango
