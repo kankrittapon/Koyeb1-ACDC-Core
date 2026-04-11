@@ -30,6 +30,7 @@ export type UploadedFileRecord = {
   fileName: string;
   originalFileName: string | null;
   mimeType: string | null;
+  driveFileId?: string | null;
   driveUrl: string | null;
   localDiskUrl: string | null;
   localDiskPath: string | null;
@@ -53,7 +54,7 @@ export type UploadedFileRecord = {
 };
 
 const richFileSelect =
-  "id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message,drive_sync_status,drive_sync_error,created_at,preview_text,summary_short,page_count,extraction_status,extraction_error";
+  "id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_file_id,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message,drive_sync_status,drive_sync_error,created_at,preview_text,summary_short,page_count,extraction_status,extraction_error";
 
 type UploadedFileExtraction = {
   previewText: string | null;
@@ -71,6 +72,7 @@ function mapRichUploadedFile(row: Record<string, unknown>): UploadedFileRecord {
     fileName: (row.file_name as string) ?? "",
     originalFileName: (row.original_file_name as string | null | undefined) ?? null,
     mimeType: (row.mime_type as string | null | undefined) ?? null,
+    driveFileId: (row.drive_file_id as string | null | undefined) ?? null,
     driveUrl: (row.drive_url as string | null | undefined) ?? null,
     localDiskUrl: (row.local_disk_url as string | null | undefined) ?? null,
     localDiskPath: (row.local_disk_path as string | null | undefined) ?? null,
@@ -431,6 +433,7 @@ export async function createUploadedFileRecord(
     originalFileName: input.local.originalFileName,
     mimeType: legacyResponse.data.mime_type ?? null,
     driveUrl: legacyResponse.data.drive_url ?? null,
+    driveFileId: null,
     localDiskUrl: input.local.publicUrl,
     localDiskPath: input.local.absolutePath,
     storedFileName: input.local.storedFileName,
@@ -520,6 +523,7 @@ export async function markUploadedFileDriveSynced(input: {
     originalFileName: null,
     mimeType: legacyUpdate.data.mime_type ?? null,
     driveUrl: legacyUpdate.data.drive_url ?? null,
+    driveFileId: input.driveFileId,
     localDiskUrl: null,
     localDiskPath: null,
     storedFileName: null,
@@ -570,7 +574,7 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
 
   const legacyResponse = await supabaseAdmin
     .from("uploaded_files")
-    .select("id,file_name,mime_type,drive_url")
+    .select("id,file_name,mime_type,drive_file_id,drive_url")
     .eq("line_user_id", lineUserId)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -589,6 +593,7 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
     fileName: legacyResponse.data.file_name,
     originalFileName: null,
     mimeType: legacyResponse.data.mime_type ?? null,
+    driveFileId: legacyResponse.data.drive_file_id ?? null,
     driveUrl: legacyResponse.data.drive_url ?? null,
     localDiskUrl: null,
     localDiskPath: null,
@@ -629,7 +634,7 @@ export async function getUploadedFileById(id: string): Promise<UploadedFileRecor
 
   const legacyResponse = await supabaseAdmin
     .from("uploaded_files")
-    .select("id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes")
+    .select("id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_file_id,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes")
     .eq("id", id)
     .maybeSingle();
 
@@ -647,6 +652,7 @@ export async function getUploadedFileById(id: string): Promise<UploadedFileRecor
     fileName: row.file_name,
     originalFileName: row.original_file_name ?? null,
     mimeType: row.mime_type ?? null,
+    driveFileId: row.drive_file_id ?? null,
     driveUrl: row.drive_url ?? null,
     localDiskUrl: row.local_disk_url ?? null,
     localDiskPath: row.local_disk_path ?? null,
@@ -691,7 +697,7 @@ export async function getRecentUploadedFilesForLineUser(
 
   const legacyResponse = await supabaseAdmin
     .from("uploaded_files")
-    .select("id,file_name,mime_type,drive_url,created_at")
+    .select("id,file_name,mime_type,drive_file_id,drive_url,created_at")
     .eq("line_user_id", lineUserId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -707,6 +713,7 @@ export async function getRecentUploadedFilesForLineUser(
         fileName: row.file_name,
         originalFileName: null,
         mimeType: row.mime_type ?? null,
+        driveFileId: row.drive_file_id ?? null,
         driveUrl: row.drive_url ?? null,
         localDiskUrl: null,
         localDiskPath: null,
@@ -759,4 +766,35 @@ export async function updateUploadedFileReviewState(input: {
 
 export function bufferToReadable(buffer: Buffer): NodeJS.ReadableStream {
   return Readable.from(buffer);
+}
+
+export async function getAllUploadedFilesForLineUser(lineUserId: string): Promise<UploadedFileRecord[]> {
+  return getRecentUploadedFilesForLineUser(lineUserId, 1000);
+}
+
+export async function deleteUploadedFileRecord(id: string): Promise<void> {
+  const response = await supabaseAdmin.from("uploaded_files").delete().eq("id", id);
+  if (response.error) {
+    throw response.error;
+  }
+}
+
+export async function removeStoredFileArtifacts(localDiskPath: string | null | undefined): Promise<void> {
+  if (!localDiskPath) {
+    return;
+  }
+
+  const sidecarPath = buildExtractionSidecarPath(localDiskPath);
+
+  await fs.promises.rm(localDiskPath, { force: true });
+  await fs.promises.rm(sidecarPath, { force: true });
+}
+
+export async function removeExtractionSidecar(localDiskPath: string | null | undefined): Promise<void> {
+  if (!localDiskPath) {
+    return;
+  }
+
+  const sidecarPath = buildExtractionSidecarPath(localDiskPath);
+  await fs.promises.rm(sidecarPath, { force: true });
 }

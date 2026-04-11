@@ -3,17 +3,21 @@ import { NextFunction, Request, Response } from "express";
 import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
 import { requestGatewayChat } from "../ai-gateway/client";
-import { uploadFileToDrive } from "../drive/service";
+import { deleteFileFromDrive, uploadFileToDrive } from "../drive/service";
 import {
   bufferToReadable,
   createUploadedFileRecord,
+  deleteUploadedFileRecord,
   extractUploadedFilePreview,
+  getAllUploadedFilesForLineUser,
   getUploadedFileById,
   getLatestUploadedFileForLineUser,
   getRecentUploadedFilesForLineUser,
   markUploadedFileDriveFailed,
   markUploadedFileDriveSynced,
   readStreamToBuffer,
+  removeExtractionSidecar,
+  removeStoredFileArtifacts,
   saveIncomingFileToDisk,
   updateUploadedFileReviewState
 } from "../files/service";
@@ -117,6 +121,7 @@ const fileContextCache = new Map<
 >();
 const aiModeState = new Map<string, number>();
 const pendingRejectReviewState = new Map<string, { fileId: string; requesterUserId: string | null }>();
+const pendingFilePurgeState = new Map<string, { scope: "meta" | "all"; count: number }>();
 const AI_MODE_IDLE_MS = 15 * 60 * 1000;
 
 const thaiWeekdayShort = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัส", "ศุกร์", "เสาร์"];
@@ -274,6 +279,11 @@ function canRequestSummary(role: string): boolean {
 
 function canMessageStaff(role: string): boolean {
   return staffMessagingRoles.has(role.toUpperCase());
+}
+
+function canManageFilePurge(role: string): boolean {
+  const normalized = role.toUpperCase();
+  return normalized === "DEV" || normalized === "ADMIN";
 }
 
 function canSendFileForReview(role: string): boolean {
@@ -1831,6 +1841,182 @@ function buildFileDeliveryFlexMessage(input: FileDeliveryCardInput) {
   } as any;
 }
 
+function buildFilePurgeFlexMessage(input: {
+  fileCount: number;
+  latestFileName?: string | null;
+}) {
+  return {
+    type: "flex" as const,
+    altText: `จัดการไฟล์ที่อัปโหลด (${input.fileCount} รายการ)`,
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: "#1d4ed8",
+        contents: [
+          {
+            type: "text" as const,
+            text: "จัดการไฟล์ที่อัปโหลด",
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text" as const,
+            text: `พบไฟล์ของบัญชีนี้ ${input.fileCount} รายการ`,
+            wrap: true,
+            weight: "bold",
+            size: "md",
+            color: "#111827"
+          },
+          {
+            type: "text" as const,
+            text: input.latestFileName ? `ไฟล์ล่าสุด: ${input.latestFileName}` : "ยังไม่มีไฟล์ล่าสุดในระบบ",
+            wrap: true,
+            size: "sm",
+            color: "#475569"
+          },
+          {
+            type: "separator" as const,
+            margin: "sm"
+          },
+          {
+            type: "text" as const,
+            text: "เลือกได้ทั้งล้าง metadata อย่างเดียว หรือ ล้างทั้งหมดจริง (รวม local file / sidecar / Drive ถ้ามี)",
+            wrap: true,
+            size: "sm",
+            color: "#111827"
+          }
+        ]
+      },
+      footer: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: [
+          {
+            type: "button" as const,
+            style: "secondary" as const,
+            action: {
+              type: "postback" as const,
+              label: "ล้าง Meta",
+              data: "file-purge|meta|prepare",
+              displayText: "/files clear-meta"
+            }
+          },
+          {
+            type: "button" as const,
+            style: "primary" as const,
+            color: "#b45309",
+            action: {
+              type: "postback" as const,
+              label: "ล้างทั้งหมด",
+              data: "file-purge|all|prepare",
+              displayText: "/files clear-all"
+            }
+          }
+        ]
+      }
+    }
+  } as any;
+}
+
+function buildFilePurgeConfirmFlexMessage(input: {
+  scope: "meta" | "all";
+  fileCount: number;
+}) {
+  const isAll = input.scope === "all";
+  return {
+    type: "flex" as const,
+    altText: `ยืนยัน${isAll ? "ล้างทั้งหมด" : "ล้าง metadata"}`,
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: isAll ? "#b91c1c" : "#92400e",
+        contents: [
+          {
+            type: "text" as const,
+            text: isAll ? "ยืนยันล้างทั้งหมด" : "ยืนยันล้าง metadata",
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text" as const,
+            text: `จะดำเนินการกับไฟล์ ${input.fileCount} รายการ`,
+            wrap: true,
+            weight: "bold",
+            size: "md",
+            color: "#111827"
+          },
+          {
+            type: "text" as const,
+            text: isAll
+              ? "คำสั่งนี้จะลบ metadata, local file, sidecar OCR และจะพยายามลบไฟล์ใน Google Drive ด้วยถ้ามี drive_file_id"
+              : "คำสั่งนี้จะลบ metadata ในฐานข้อมูลและ sidecar OCR แต่จะยังไม่แตะไฟล์จริงใน local disk หรือ Google Drive",
+            wrap: true,
+            size: "sm",
+            color: "#111827"
+          }
+        ]
+      },
+      footer: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: [
+          {
+            type: "button" as const,
+            style: "primary" as const,
+            color: isAll ? "#b91c1c" : "#92400e",
+            action: {
+              type: "postback" as const,
+              label: "ยืนยัน",
+              data: `file-purge|${input.scope}|confirm`,
+              displayText: isAll ? "/files clear-all confirm" : "/files clear-meta confirm"
+            }
+          },
+          {
+            type: "button" as const,
+            style: "secondary" as const,
+            action: {
+              type: "postback" as const,
+              label: "ยกเลิก",
+              data: "file-purge|cancel|confirm",
+              displayText: "ยกเลิกการล้างไฟล์"
+            }
+          }
+        ]
+      }
+    }
+  } as any;
+}
+
 function buildUploadSuccessFlexMessage(input: UploadSuccessCardInput) {
   const footerButtons: any[] = [
     {
@@ -2456,6 +2642,136 @@ async function rejectReviewedFile(input: {
   });
 
   return `✅ ปฏิเสธไฟล์ "${fileName}" แล้ว และแจ้งเหตุผลกลับผู้ส่งเรียบร้อยครับ`;
+}
+
+async function buildFilePurgeSummary(lineUserId: string): Promise<{
+  fileCount: number;
+  latestFileName: string | null;
+}> {
+  const files = await getAllUploadedFilesForLineUser(lineUserId);
+  return {
+    fileCount: files.length,
+    latestFileName: files[0]?.originalFileName ?? files[0]?.fileName ?? null
+  };
+}
+
+async function purgeUploadedFilesForLineUser(input: {
+  lineUserId: string;
+  scope: "meta" | "all";
+}): Promise<string> {
+  const files = await getAllUploadedFilesForLineUser(input.lineUserId);
+  if (files.length === 0) {
+    return "ℹ️ ตอนนี้ยังไม่มีไฟล์ของบัญชีนี้ให้ลบครับ";
+  }
+
+  let deletedDriveCount = 0;
+  let deletedLocalCount = 0;
+  let deletedMetaCount = 0;
+  let driveDeleteFailures = 0;
+
+  for (const file of files) {
+    if (input.scope === "all") {
+      if (file.localDiskPath) {
+        await removeStoredFileArtifacts(file.localDiskPath);
+        deletedLocalCount += 1;
+      }
+
+      if (file.driveFileId) {
+        try {
+          await deleteFileFromDrive(file.driveFileId);
+          deletedDriveCount += 1;
+        } catch {
+          driveDeleteFailures += 1;
+        }
+      }
+    } else {
+      await removeExtractionSidecar(file.localDiskPath);
+    }
+
+    await deleteUploadedFileRecord(file.id);
+    deletedMetaCount += 1;
+  }
+
+  clearTransientUserState(input.lineUserId);
+
+  const lines = [
+    input.scope === "all" ? "🧹 ล้างไฟล์ทั้งหมดเรียบร้อยแล้ว" : "🧹 ล้าง metadata ไฟล์เรียบร้อยแล้ว",
+    "",
+    `ลบ metadata: ${deletedMetaCount} รายการ`
+  ];
+
+  if (input.scope === "all") {
+    lines.push(`ลบ local file/sidecar: ${deletedLocalCount} รายการ`);
+    lines.push(`ลบ Google Drive: ${deletedDriveCount} รายการ`);
+    if (driveDeleteFailures > 0) {
+      lines.push(`ลบ Google Drive ไม่สำเร็จ: ${driveDeleteFailures} รายการ`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function handleFilePurgePostback(
+  event: WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
+) {
+  const lineUserId = event.source.userId;
+  if (!lineUserId) {
+    return;
+  }
+
+  const match = event.postback.data.match(/^file-purge\|(meta|all|cancel)\|(prepare|confirm)$/);
+  if (!match) {
+    await replyText(event.replyToken, "⚠️ รูปแบบคำสั่งล้างไฟล์ไม่ถูกต้องครับ");
+    return;
+  }
+
+  const [, scopeToken, stage] = match as [string, "meta" | "all" | "cancel", "prepare" | "confirm"];
+  const actingUser = await ensureLineUser(lineUserId);
+  if (!canManageFilePurge(actingUser.role)) {
+    await replyText(event.replyToken, "⚠️ คำสั่งล้างไฟล์ชุดนี้เปิดให้เฉพาะ DEV ครับ");
+    return;
+  }
+
+  if (scopeToken === "cancel") {
+    pendingFilePurgeState.delete(lineUserId);
+    await replyText(event.replyToken, "✅ ยกเลิกการล้างไฟล์แล้วครับ", {
+      title: "ล้างไฟล์",
+      accentColor: "#2563eb"
+    });
+    return;
+  }
+
+  if (stage === "prepare") {
+    const summary = await buildFilePurgeSummary(lineUserId);
+    pendingFilePurgeState.set(lineUserId, {
+      scope: scopeToken,
+      count: summary.fileCount
+    });
+    await getLineClient().replyMessage(event.replyToken, buildFilePurgeConfirmFlexMessage({
+      scope: scopeToken,
+      fileCount: summary.fileCount
+    }));
+    return;
+  }
+
+  const pending = pendingFilePurgeState.get(lineUserId);
+  if (!pending || pending.scope !== scopeToken) {
+    await replyText(event.replyToken, "⚠️ ไม่พบรายการยืนยันล่าสุดแล้วครับ ลองใช้ /files status ใหม่อีกครั้ง", {
+      title: "ล้างไฟล์",
+      accentColor: "#b45309"
+    });
+    return;
+  }
+
+  pendingFilePurgeState.delete(lineUserId);
+  const message = await purgeUploadedFilesForLineUser({
+    lineUserId,
+    scope: scopeToken
+  });
+  await replyText(event.replyToken, message, {
+    title: "ล้างไฟล์",
+    accentColor: scopeToken === "all" ? "#b91c1c" : "#92400e"
+  });
 }
 
 async function handleFileReviewPostback(
@@ -3134,6 +3450,48 @@ async function tryHandleCommand(input: {
 
     statusLines.push("", "ถ้ารู้สึกว่างานเก่าค้าง ลองใช้ /clear เพื่อล้าง state ชั่วคราวได้ครับ");
     return statusLines.join("\n");
+  }
+
+  if (trimmed === "/files status") {
+    if (!canManageFilePurge(input.user.role)) {
+      return "⚠️ ชุดคำสั่งจัดการไฟล์นี้เปิดให้เฉพาะ DEV ครับ";
+    }
+
+    const summary = await buildFilePurgeSummary(input.lineUserId);
+    if (summary.fileCount === 0) {
+      return "ℹ️ ตอนนี้ยังไม่มีไฟล์ของบัญชีนี้ในระบบครับ";
+    }
+
+    await getLineClient().pushMessage(input.lineUserId, buildFilePurgeFlexMessage({
+      fileCount: summary.fileCount,
+      latestFileName: summary.latestFileName
+    }));
+    return "📁 ส่งแผงจัดการไฟล์ให้แล้วครับ เลือกได้ว่าจะล้าง metadata หรือ ล้างทั้งหมดจริง";
+  }
+
+  if (trimmed === "/files clear-meta" || trimmed === "/files clear-all") {
+    if (!canManageFilePurge(input.user.role)) {
+      return "⚠️ ชุดคำสั่งจัดการไฟล์นี้เปิดให้เฉพาะ DEV ครับ";
+    }
+
+    const summary = await buildFilePurgeSummary(input.lineUserId);
+    if (summary.fileCount === 0) {
+      return "ℹ️ ตอนนี้ยังไม่มีไฟล์ของบัญชีนี้ให้ลบครับ";
+    }
+
+    const scope = trimmed.endsWith("clear-all") ? "all" : "meta";
+    pendingFilePurgeState.set(input.lineUserId, {
+      scope,
+      count: summary.fileCount
+    });
+
+    await getLineClient().pushMessage(input.lineUserId, buildFilePurgeConfirmFlexMessage({
+      scope,
+      fileCount: summary.fileCount
+    }));
+    return scope === "all"
+      ? "🧹 ส่งการ์ดยืนยันล้างทั้งหมดให้แล้วครับ"
+      : "🧹 ส่งการ์ดยืนยันล้าง metadata ให้แล้วครับ";
   }
 
   if (trimmed === "/event today") {
@@ -3817,6 +4175,14 @@ export async function handleLineEvent(event: WebhookEvent): Promise<void> {
   await logWebhookEvent(event, "received");
 
   if (event.type === "postback") {
+    if ((event as WebhookEvent & { postback?: { data?: string } }).postback?.data?.startsWith("file-purge|")) {
+      await handleFilePurgePostback(
+        event as WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
+      );
+      await logWebhookEvent(event, "processed");
+      return;
+    }
+
     if ((event as WebhookEvent & { postback?: { data?: string } }).postback?.data?.startsWith("file-review|")) {
       await handleFileReviewPostback(
         event as WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
