@@ -1,4 +1,5 @@
 import express, { NextFunction, Request, Response } from "express";
+import * as fs from "fs";
 import { config } from "./config";
 import { supabaseAdmin } from "./lib/supabase";
 import { requireAccess, requireRole } from "./middleware/auth";
@@ -13,6 +14,8 @@ import { schedulerRouter } from "./modules/scheduler/routes";
 import { getRequestId } from "./lib/http";
 
 const app = express();
+
+fs.mkdirSync(config.FILE_STORAGE_ROOT, { recursive: true });
 
 const corsAllowedOrigins = config.CORS_ALLOW_ORIGINS.split(",")
   .map((origin) => origin.trim())

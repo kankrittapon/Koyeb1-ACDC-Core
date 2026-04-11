@@ -284,6 +284,13 @@ Files prepared for this path:
 - `deploy/ai-brain/docker-compose.yml`
 - `deploy/ai-brain/.env.example`
 
+Persistent upload storage on the host is supported by default in the compose file:
+
+- `FILE_STORAGE_ROOT=/app/storage/uploads`
+- `KOYEB1_UPLOADS_HOST_PATH=./storage/uploads`
+
+That host folder is mounted into the container so uploaded files survive rebuilds and container recreation.
+
 Recommended initial mode:
 
 - `ENABLE_LINE_WEBHOOK=false`
@@ -301,15 +308,18 @@ Suggested steps:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `JWT_SECRET`
 - `KOYEB0_INTERNAL_API_KEY`
-4. optionally leave LINE and Google Drive values empty for the first boot
-5. run:
+4. keep upload persistence enabled:
+- `FILE_STORAGE_ROOT=/app/storage/uploads`
+- `KOYEB1_UPLOADS_HOST_PATH=./storage/uploads`
+5. optionally leave LINE and Google Drive values empty for the first boot
+6. run:
 
 ```bash
 cd deploy/ai-brain
 docker compose up -d --build
 ```
 
-6. verify:
+7. verify:
 
 ```bash
 curl http://100.68.88.63:18081/health

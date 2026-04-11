@@ -7,5 +7,7 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - "${KOYEB1_UPLOADS_HOST_PATH:-./storage/uploads}:${FILE_STORAGE_ROOT:-/app/storage/uploads}"
     ports:
       - "${TAILSCALE_BIND_IP}:${KOYEB1_HOST_PORT}:8001"
