@@ -64,9 +64,16 @@ const roleKeywordMap = new Map<string, string>([
   ["เลขา", "SECRETARY"],
   ["ผู้ช่วย", "SECRETARY"],
   ["หน้าห้อง", "SECRETARY"],
+  ["ผู้ช่วยผู้พัน", "SECRETARY"],
+  ["ผช.", "SECRETARY"],
+  ["ผช", "SECRETARY"],
   ["secretary", "SECRETARY"],
   ["ผู้พัน", "BOSS"],
-  ["boss", "BOSS"]
+  ["บอส", "BOSS"],
+  ["boss", "BOSS"],
+  ["ผบ.พัน", "BOSS"],
+  ["ผบพัน", "BOSS"],
+  ["ผบ พัน", "BOSS"]
 ]);
 const secretaryRoles = new Set(["SECRETARY"]);
 const fileReviewSubmitterRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
