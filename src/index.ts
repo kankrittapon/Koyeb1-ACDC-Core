@@ -21,6 +21,26 @@ const corsAllowedOrigins = config.CORS_ALLOW_ORIGINS.split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function isOriginAllowed(origin: string): boolean {
+  return corsAllowedOrigins.some((allowedOrigin) => {
+    if (allowedOrigin === "*") {
+      return true;
+    }
+
+    if (allowedOrigin === origin) {
+      return true;
+    }
+
+    if (!allowedOrigin.includes("*")) {
+      return false;
+    }
+
+    const [prefix, ...suffixParts] = allowedOrigin.split("*");
+    const suffix = suffixParts.join("*");
+    return origin.startsWith(prefix) && origin.endsWith(suffix);
+  });
+}
+
 app.use((req, res, next) => {
   const origin = req.header("origin");
   const allowAnyOrigin = corsAllowedOrigins.includes("*");
@@ -28,7 +48,7 @@ app.use((req, res, next) => {
   if (allowAnyOrigin) {
     res.setHeader("Access-Control-Allow-Origin", origin ?? "*");
     res.setHeader("Vary", "Origin");
-  } else if (origin && corsAllowedOrigins.includes(origin)) {
+  } else if (origin && isOriginAllowed(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
