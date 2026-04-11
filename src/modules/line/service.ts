@@ -250,6 +250,11 @@ function canMessageStaff(role: string): boolean {
   return staffMessagingRoles.has(role.toUpperCase());
 }
 
+function canSendFileForReview(role: string): boolean {
+  const normalizedRole = role.toUpperCase();
+  return staffMessagingRoles.has(normalizedRole) || fileReviewSubmitterRoles.has(normalizedRole);
+}
+
 function canRequestAcknowledgement(role: string): boolean {
   return acknowledgementRequesterRoles.has(role.toUpperCase());
 }
@@ -2866,7 +2871,7 @@ async function tryHandleCommand(input: {
     trimmed.match(/^ส่งไฟล์(?:นี้)?ให้\s*(.+?)\s+(.+)$/i) ??
     trimmed.match(/^(.+?\.[a-z0-9]{2,6})\s+ส่งไฟล์(?:นี้)?ให้\s*(.+?)\s+(.+)$/i);
   if (staffFileMatch && (fileContextCache.has(input.lineUserId) || (await getLatestUploadedFileForLineUser(input.lineUserId)))) {
-    if (!canMessageStaff(input.user.role)) {
+    if (!canSendFileForReview(input.user.role)) {
       return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ส่งไฟล์พร้อมสั่งงานให้ทีมครับ";
     }
 
