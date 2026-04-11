@@ -2878,6 +2878,60 @@ function buildRetrievedFileContext(input: {
   ].join("\n");
 }
 
+function buildDeterministicFileAnswer(input: {
+  prompt: string;
+  files: Array<{
+    fileName: string;
+    originalFileName: string | null;
+    mimeType: string | null;
+    createdAt?: string | null;
+    extractionStatus?: string | null;
+    extractionError?: string | null;
+    summaryShort?: string | null;
+    previewText?: string | null;
+  }>;
+}): string | null {
+  const normalizedPrompt = normalizeCommonThaiTypos(input.prompt.trim());
+  const primaryFile = input.files[0];
+  if (!primaryFile) {
+    return "ตอนนี้ยังไม่พบไฟล์ที่ยืนยันได้ในระบบสำหรับบัญชีนี้ครับ";
+  }
+
+  const asksForContent = /(เนื้อหา|พูดถึงอะไร|เกี่ยวกับอะไร|สาระ|ใจความ|เบื้องต้นของเอกสาร|สรุปไฟล์ล่าสุด)/i.test(
+    normalizedPrompt
+  );
+  const asksForStatus = /(สถานะไฟล์|อยู่ขั้นตอนไหน|review|อนุมัติ|ปฏิเสธ|drive)/i.test(normalizedPrompt);
+
+  const displayName = primaryFile.originalFileName ?? primaryFile.fileName;
+  const createdAt = primaryFile.createdAt ? `\nเวลาอัปโหลด: ${primaryFile.createdAt}` : "";
+
+  if (asksForStatus && !asksForContent) {
+    return null;
+  }
+
+  if (primaryFile.extractionStatus === "completed" && (primaryFile.summaryShort || primaryFile.previewText)) {
+    const summary = primaryFile.summaryShort ?? "มี preview แล้ว แต่ยังสรุปสั้นไม่ได้";
+    const previewSnippet = primaryFile.previewText
+      ? `\nตัวอย่างข้อความ:\n${primaryFile.previewText.slice(0, 500)}`
+      : "";
+    return `📄 ไฟล์ล่าสุด: ${displayName}${createdAt}\n\nสรุปเบื้องต้นจาก preview ที่ดึงได้:\n${summary}${previewSnippet}`;
+  }
+
+  if (primaryFile.extractionStatus === "unsupported") {
+    return `📄 ไฟล์ล่าสุด: ${displayName}${createdAt}\n\nตอนนี้ระบบมี metadata ของไฟล์แล้ว แต่ยังไม่มี extracted preview สำหรับไฟล์ชนิดนี้ครับ`;
+  }
+
+  if (primaryFile.extractionStatus === "failed") {
+    return `📄 ไฟล์ล่าสุด: ${displayName}${createdAt}\n\nระบบพยายามอ่านเนื้อหาไฟล์แล้ว แต่ยังไม่สำเร็จครับ${primaryFile.extractionError ? `\nสาเหตุ: ${primaryFile.extractionError}` : ""}`;
+  }
+
+  if (asksForContent) {
+    return `📄 ไฟล์ล่าสุด: ${displayName}${createdAt}\n\nตอนนี้ระบบยังไม่มี extracted preview ที่ยืนยันได้สำหรับไฟล์นี้ครับ`;
+  }
+
+  return null;
+}
+
 async function tryHandleRetrievedFileAiPrompt(input: {
   prompt: string;
   user: {
@@ -2914,6 +2968,14 @@ async function tryHandleRetrievedFileAiPrompt(input: {
 
   if (files.length === 0) {
     return "ตอนนี้ยังไม่พบไฟล์ที่ยืนยันได้ในระบบสำหรับบัญชีนี้ครับ";
+  }
+
+  const deterministicAnswer = buildDeterministicFileAnswer({
+    prompt: input.prompt,
+    files
+  });
+  if (deterministicAnswer) {
+    return deterministicAnswer;
   }
 
   const result = await requestGatewayChat({
