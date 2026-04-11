@@ -7,6 +7,7 @@ import { uploadFileToDrive } from "../drive/service";
 import {
   bufferToReadable,
   createUploadedFileRecord,
+  extractUploadedFilePreview,
   getUploadedFileById,
   getLatestUploadedFileForLineUser,
   getRecentUploadedFilesForLineUser,
@@ -2826,6 +2827,11 @@ function buildRetrievedFileContext(input: {
     driveUrl?: string | null;
     localDiskUrl?: string | null;
     createdAt?: string | null;
+    previewText?: string | null;
+    summaryShort?: string | null;
+    pageCount?: number | null;
+    extractionStatus?: string | null;
+    extractionError?: string | null;
   }>;
   aiContextConfig: {
     botInstruction?: string | null;
@@ -2846,7 +2852,12 @@ function buildRetrievedFileContext(input: {
       driveSyncStatus: file.driveSyncStatus ?? "unknown",
       hasDriveUrl: Boolean(file.driveUrl),
       hasLocalCopy: Boolean(file.localDiskUrl),
-      createdAt: file.createdAt ?? null
+      createdAt: file.createdAt ?? null,
+      extractionStatus: file.extractionStatus ?? "pending",
+      extractionError: file.extractionError ?? null,
+      pageCount: file.pageCount ?? null,
+      summaryShort: file.summaryShort ?? null,
+      previewText: file.previewText ? file.previewText.slice(0, 1500) : null
     }))
   };
 
@@ -2854,8 +2865,9 @@ function buildRetrievedFileContext(input: {
     buildRoleContext(input.user, input.aiContextConfig),
     "You are in explicit AI mode.",
     "Use only the verified file registry data below.",
-    "Do not invent file contents, page contents, or summaries of the document body.",
-    "You may summarize file metadata, status, review flow, and likely next step only.",
+    "Do not invent file contents, page contents, or summaries of the document body beyond the extracted preview.",
+    "You may summarize file metadata, status, review flow, likely next step, and extracted preview when it exists.",
+    "If extracted preview exists, make it clear that you are summarizing from the extracted preview only, not the full original file.",
     "If the user asks about actual document contents and no extracted preview exists, say clearly that the system only has file metadata right now.",
     `Verified file data: ${JSON.stringify(verifiedPayload)}`
   ].join("\n");
@@ -3308,6 +3320,14 @@ async function handleBinaryUpload(
     fileName: originalFileName,
     mimeType,
     local: storedLocalFile
+  });
+
+  await extractUploadedFilePreview({
+    id: fileRecord.id,
+    fileName: originalFileName,
+    mimeType,
+    buffer: fileBuffer,
+    localDiskPath: storedLocalFile.absolutePath
   });
 
   let driveResult: { id: string; webViewLink: string | null } | null = null;

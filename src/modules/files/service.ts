@@ -43,10 +43,23 @@ export type UploadedFileRecord = {
   driveSyncStatus?: string | null;
   driveSyncError?: string | null;
   createdAt?: string | null;
+  previewText?: string | null;
+  summaryShort?: string | null;
+  pageCount?: number | null;
+  extractionStatus?: string | null;
+  extractionError?: string | null;
 };
 
 const richFileSelect =
-  "id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message,drive_sync_status,drive_sync_error,created_at";
+  "id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message,drive_sync_status,drive_sync_error,created_at,preview_text,summary_short,page_count,extraction_status,extraction_error";
+
+type UploadedFileExtraction = {
+  previewText: string | null;
+  summaryShort: string | null;
+  pageCount: number | null;
+  extractionStatus: "pending" | "completed" | "unsupported" | "failed";
+  extractionError: string | null;
+};
 
 function mapRichUploadedFile(row: Record<string, unknown>): UploadedFileRecord {
   return {
@@ -68,7 +81,173 @@ function mapRichUploadedFile(row: Record<string, unknown>): UploadedFileRecord {
     reviewMessage: (row.review_message as string | null | undefined) ?? null,
     driveSyncStatus: (row.drive_sync_status as string | null | undefined) ?? null,
     driveSyncError: (row.drive_sync_error as string | null | undefined) ?? null,
-    createdAt: (row.created_at as string | null | undefined) ?? null
+    createdAt: (row.created_at as string | null | undefined) ?? null,
+    previewText: (row.preview_text as string | null | undefined) ?? null,
+    summaryShort: (row.summary_short as string | null | undefined) ?? null,
+    pageCount: (row.page_count as number | null | undefined) ?? null,
+    extractionStatus: (row.extraction_status as string | null | undefined) ?? null,
+    extractionError: (row.extraction_error as string | null | undefined) ?? null
+  };
+}
+
+function buildExtractionSidecarPath(localDiskPath: string): string {
+  return `${localDiskPath}.ai.json`;
+}
+
+function normalizePreviewText(text: string, maxLength = 4000): string {
+  return text.replace(/\r\n/g, "\n").replace(/\u0000/g, "").trim().slice(0, maxLength);
+}
+
+function buildSummaryFromPreview(previewText: string): string | null {
+  const lines = previewText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const summary = lines.slice(0, 3).join(" | ");
+  return summary.slice(0, 280);
+}
+
+function canExtractTextPreview(fileName: string, mimeType: string): boolean {
+  const normalizedMime = mimeType.toLowerCase();
+  const ext = path.extname(fileName).toLowerCase();
+
+  if (normalizedMime.startsWith("text/")) {
+    return true;
+  }
+
+  if (["application/json", "application/xml"].includes(normalizedMime)) {
+    return true;
+  }
+
+  return [".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".xml", ".yml", ".yaml"].includes(ext);
+}
+
+function extractPreviewFromBuffer(input: {
+  fileName: string;
+  mimeType: string;
+  buffer: Buffer;
+}): UploadedFileExtraction {
+  if (!canExtractTextPreview(input.fileName, input.mimeType)) {
+    return {
+      previewText: null,
+      summaryShort: null,
+      pageCount: null,
+      extractionStatus: "unsupported",
+      extractionError: "preview extraction is not supported for this file type yet"
+    };
+  }
+
+  try {
+    const previewText = normalizePreviewText(input.buffer.toString("utf8"));
+    if (!previewText) {
+      return {
+        previewText: null,
+        summaryShort: null,
+        pageCount: 1,
+        extractionStatus: "completed",
+        extractionError: null
+      };
+    }
+
+    return {
+      previewText,
+      summaryShort: buildSummaryFromPreview(previewText),
+      pageCount: 1,
+      extractionStatus: "completed",
+      extractionError: null
+    };
+  } catch (error) {
+    return {
+      previewText: null,
+      summaryShort: null,
+      pageCount: null,
+      extractionStatus: "failed",
+      extractionError: error instanceof Error ? error.message.slice(0, 500) : "preview extraction failed"
+    };
+  }
+}
+
+async function writeExtractionSidecar(localDiskPath: string, extraction: UploadedFileExtraction) {
+  const sidecarPath = buildExtractionSidecarPath(localDiskPath);
+  await fs.promises.writeFile(
+    sidecarPath,
+    JSON.stringify(
+      {
+        preview_text: extraction.previewText,
+        summary_short: extraction.summaryShort,
+        page_count: extraction.pageCount,
+        extraction_status: extraction.extractionStatus,
+        extraction_error: extraction.extractionError,
+        updated_at: new Date().toISOString()
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
+
+async function readExtractionSidecar(localDiskPath: string): Promise<UploadedFileExtraction | null> {
+  try {
+    const raw = await fs.promises.readFile(buildExtractionSidecarPath(localDiskPath), "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      previewText: (parsed.preview_text as string | null | undefined) ?? null,
+      summaryShort: (parsed.summary_short as string | null | undefined) ?? null,
+      pageCount: (parsed.page_count as number | null | undefined) ?? null,
+      extractionStatus:
+        ((parsed.extraction_status as UploadedFileExtraction["extractionStatus"] | undefined) ?? "pending"),
+      extractionError: (parsed.extraction_error as string | null | undefined) ?? null
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function persistExtractionToDatabase(id: string, extraction: UploadedFileExtraction) {
+  const update = await supabaseAdmin
+    .from("uploaded_files")
+    .update({
+      preview_text: extraction.previewText,
+      summary_short: extraction.summaryShort,
+      page_count: extraction.pageCount,
+      extraction_status: extraction.extractionStatus,
+      extraction_error: extraction.extractionError,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", id);
+
+  if (update.error && update.error.code !== "PGRST204" && update.error.code !== "42703") {
+    throw update.error;
+  }
+}
+
+async function enrichUploadedFileWithExtraction(record: UploadedFileRecord): Promise<UploadedFileRecord> {
+  if (record.previewText || record.summaryShort || record.extractionStatus) {
+    return record;
+  }
+
+  if (!record.localDiskPath) {
+    return record;
+  }
+
+  const extraction = await readExtractionSidecar(record.localDiskPath);
+  if (!extraction) {
+    return record;
+  }
+
+  return {
+    ...record,
+    previewText: extraction.previewText,
+    summaryShort: extraction.summaryShort,
+    pageCount: extraction.pageCount,
+    extractionStatus: extraction.extractionStatus,
+    extractionError: extraction.extractionError
   };
 }
 
@@ -214,8 +393,37 @@ export async function createUploadedFileRecord(
     reviewRequestedToUserId: null,
     reviewTargetUserId: null,
     reviewReason: null,
-    reviewMessage: null
+    reviewMessage: null,
+    previewText: null,
+    summaryShort: null,
+    pageCount: null,
+    extractionStatus: null,
+    extractionError: null
   };
+}
+
+export async function extractUploadedFilePreview(input: {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  buffer: Buffer;
+  localDiskPath: string;
+}): Promise<UploadedFileExtraction> {
+  const extraction = extractPreviewFromBuffer({
+    fileName: input.fileName,
+    mimeType: input.mimeType,
+    buffer: input.buffer
+  });
+
+  await writeExtractionSidecar(input.localDiskPath, extraction);
+
+  try {
+    await persistExtractionToDatabase(input.id, extraction);
+  } catch {
+    // Sidecar is the source of truth for phase 2; DB persistence is best-effort.
+  }
+
+  return extraction;
 }
 
 export async function markUploadedFileDriveSynced(input: {
@@ -303,7 +511,9 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
     if (!row) {
       return null;
     }
-    return mapRichUploadedFile(row as unknown as Record<string, unknown>);
+    return enrichUploadedFileWithExtraction(
+      mapRichUploadedFile(row as unknown as Record<string, unknown>)
+    );
   }
 
   const legacyResponse = await supabaseAdmin
@@ -322,7 +532,7 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
     return null;
   }
 
-  return {
+  return enrichUploadedFileWithExtraction({
     id: legacyResponse.data.id,
     fileName: legacyResponse.data.file_name,
     originalFileName: null,
@@ -338,8 +548,13 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
     reviewRequestedToUserId: null,
     reviewTargetUserId: null,
     reviewReason: null,
-    reviewMessage: null
-  };
+    reviewMessage: null,
+    previewText: null,
+    summaryShort: null,
+    pageCount: null,
+    extractionStatus: null,
+    extractionError: null
+  });
 }
 
 export async function getUploadedFileById(id: string): Promise<UploadedFileRecord | null> {
@@ -355,7 +570,9 @@ export async function getUploadedFileById(id: string): Promise<UploadedFileRecor
     }
 
     const row = response.data;
-    return mapRichUploadedFile(row as unknown as Record<string, unknown>);
+    return enrichUploadedFileWithExtraction(
+      mapRichUploadedFile(row as unknown as Record<string, unknown>)
+    );
   }
 
   const legacyResponse = await supabaseAdmin
@@ -373,7 +590,7 @@ export async function getUploadedFileById(id: string): Promise<UploadedFileRecor
   }
 
   const row = legacyResponse.data;
-  return {
+  return enrichUploadedFileWithExtraction({
     id: row.id,
     fileName: row.file_name,
     originalFileName: row.original_file_name ?? null,
@@ -392,8 +609,13 @@ export async function getUploadedFileById(id: string): Promise<UploadedFileRecor
     reviewMessage: null,
     driveSyncStatus: null,
     driveSyncError: null,
-    createdAt: null
-  };
+    createdAt: null,
+    previewText: null,
+    summaryShort: null,
+    pageCount: null,
+    extractionStatus: null,
+    extractionError: null
+  });
 }
 
 export async function getRecentUploadedFilesForLineUser(
@@ -408,8 +630,10 @@ export async function getRecentUploadedFilesForLineUser(
     .limit(limit);
 
   if (!richResponse.error) {
-    return (richResponse.data ?? []).map((row) =>
-      mapRichUploadedFile(row as unknown as Record<string, unknown>)
+    return Promise.all(
+      (richResponse.data ?? []).map((row) =>
+        enrichUploadedFileWithExtraction(mapRichUploadedFile(row as unknown as Record<string, unknown>))
+      )
     );
   }
 
@@ -424,27 +648,36 @@ export async function getRecentUploadedFilesForLineUser(
     throw richResponse.error ?? legacyResponse.error;
   }
 
-  return (legacyResponse.data ?? []).map((row) => ({
-    id: row.id,
-    fileName: row.file_name,
-    originalFileName: null,
-    mimeType: row.mime_type ?? null,
-    driveUrl: row.drive_url ?? null,
-    localDiskUrl: null,
-    localDiskPath: null,
-    storedFileName: null,
-    sizeBytes: null,
-    userId: null,
-    lineUserId,
-    reviewStatus: null,
-    reviewRequestedToUserId: null,
-    reviewTargetUserId: null,
-    reviewReason: null,
-    reviewMessage: null,
-    driveSyncStatus: null,
-    driveSyncError: null,
-    createdAt: row.created_at ?? null
-  }));
+  return Promise.all(
+    (legacyResponse.data ?? []).map((row) =>
+      enrichUploadedFileWithExtraction({
+        id: row.id,
+        fileName: row.file_name,
+        originalFileName: null,
+        mimeType: row.mime_type ?? null,
+        driveUrl: row.drive_url ?? null,
+        localDiskUrl: null,
+        localDiskPath: null,
+        storedFileName: null,
+        sizeBytes: null,
+        userId: null,
+        lineUserId,
+        reviewStatus: null,
+        reviewRequestedToUserId: null,
+        reviewTargetUserId: null,
+        reviewReason: null,
+        reviewMessage: null,
+        driveSyncStatus: null,
+        driveSyncError: null,
+        createdAt: row.created_at ?? null,
+        previewText: null,
+        summaryShort: null,
+        pageCount: null,
+        extractionStatus: null,
+        extractionError: null
+      })
+    )
+  );
 }
 
 export async function updateUploadedFileReviewState(input: {
