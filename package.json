@@ -16,6 +16,7 @@
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.3.1",
     "express": "^5.1.0",
+    "extension-koyeb": "file:../Extension-Koyeb",
     "googleapis": "^153.0.0",
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^4.2.1",

@@ -1,4 +1,11 @@
 import { Client, middleware, MiddlewareConfig, WebhookEvent } from "@line/bot-sdk";
+import {
+  acdcCommands,
+  acdcRoleAliases,
+  acdcRoleCapabilities,
+  CommandDefinition,
+  createCommandRegistry
+} from "extension-koyeb";
 import { NextFunction, Request, Response } from "express";
 import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
@@ -144,6 +151,32 @@ const thaiMonthShort = [
   "พ.ย.",
   "ธ.ค."
 ];
+
+const extensionCommandRegistry = createCommandRegistry({
+  commands: acdcCommands,
+  roleAliases: acdcRoleAliases,
+  roleCapabilities: acdcRoleCapabilities
+});
+
+const extensionMenuLabels: Partial<Record<CommandDefinition["key"], string>> = {
+  "help.menu": "/help หรือ /commands หรือ /menu หรือ /สิทธิ์",
+  "help.ai": "/help ai",
+  "help.files": "/help files",
+  "system.status": "/status",
+  "system.clear": "/clear",
+  "files.status": "/files status",
+  "files.clear-meta": "/files clear-meta",
+  "files.clear-all": "/files clear-all",
+  "calendar.today": "ตารางงานวันนี้ / มีงานอะไรวันนี้",
+  "calendar.tomorrow": "ตารางพรุ่งนี้ / มีงานอะไรพรุ่งนี้",
+  "summary.today": "สรุปงานวันนี้",
+  "summary.nextweek": "สรุปงานสัปดาห์หน้า",
+  "summary.thismonth": "สรุปงานเดือนนี้",
+  "ai.explicit": "AI ...",
+  "messaging.staff": "ส่งข้อความให้... / ฝากข้อความให้...",
+  "files.forward": "ส่งไฟล์นี้ให้... [ข้อความ]",
+  "ack.request": "เรียก นยก / นกบ / นกพ / นกง"
+};
 
 type BangkokDateParts = {
   year: number;
@@ -319,42 +352,30 @@ function buildRoleMenuText(role: string): string {
     "คำสั่งที่ใช้ได้"
   ];
 
-  lines.push("- /status");
-  lines.push("- /clear");
-  lines.push("- /help หรือ /commands หรือ /menu หรือ /สิทธิ์");
+  const availableCommands = extensionCommandRegistry.listForRole(normalizedRole);
+  const menuLines = new Set<string>();
+
+  for (const command of availableCommands) {
+    const label = extensionMenuLabels[command.key];
+    if (label) {
+      menuLines.add(`- ${label}`);
+    }
+  }
+
+  for (const line of menuLines) {
+    lines.push(line);
+  }
 
   if (canManageCalendar(normalizedRole)) {
-    lines.push("- ตารางงานวันนี้ / ตารางพรุ่งนี้ / ตารางงานอังคารหน้า");
+    lines.push("- ตารางงานอังคารหน้า");
   }
 
   if (canRequestSummary(normalizedRole)) {
-    lines.push("- สรุปงานวันนี้ / สรุปงานสัปดาห์หน้า / สรุปงานเดือนนี้");
     lines.push("- ขอการ์ดวันนี้");
   }
 
-  if (canUseAIMode(normalizedRole)) {
-    lines.push("- AI ...");
-  }
-
-  if (canMessageStaff(normalizedRole)) {
-    lines.push("- ส่งข้อความให้... / ฝากข้อความให้...");
-  }
-
-  if (canSendFileForReview(normalizedRole)) {
-    lines.push("- ส่งไฟล์นี้ให้... [ข้อความ]");
-  }
-
-  if (canRequestAcknowledgement(normalizedRole)) {
-    lines.push("- เรียก นยก / นกบ / นกพ / นกง");
-  }
-
   if (canManageFilePurge(normalizedRole)) {
-    lines.push("- /files status");
-    lines.push("- /files clear-meta");
-    lines.push("- /files clear-all");
     lines.push("- /help role BOSS");
-    lines.push("- /help ai");
-    lines.push("- /help files");
   }
 
   lines.push("", "ข้อจำกัด");
@@ -2384,6 +2405,16 @@ async function findStaffUser(target: string) {
 
 function shouldRouteAiPromptToQuickAction(prompt: string): boolean {
   const normalized = normalizeTextCommand(prompt);
+  const matched = extensionCommandRegistry.match(normalized);
+  if (
+    matched &&
+    matched.command.category !== "ai" &&
+    matched.command.category !== "help" &&
+    matched.command.category !== "system"
+  ) {
+    return true;
+  }
+
   return (
     normalized.startsWith("/event ") ||
     normalized.startsWith("/summary ") ||
