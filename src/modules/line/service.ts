@@ -9,6 +9,7 @@ import {
   createUploadedFileRecord,
   getUploadedFileById,
   getLatestUploadedFileForLineUser,
+  getRecentUploadedFilesForLineUser,
   markUploadedFileDriveFailed,
   markUploadedFileDriveSynced,
   readStreamToBuffer,
@@ -2572,6 +2573,10 @@ function containsAiSummaryKeyword(text: string): boolean {
   return /(สรุปงาน|รายงาน|สรุปตาราง|สรุป.*งาน)/i.test(normalizeCommonThaiTypos(text));
 }
 
+function containsAiFileKeyword(text: string): boolean {
+  return /(ไฟล์|เอกสาร|pdf|docx|xlsx|รูป|รูปภาพ)/i.test(normalizeCommonThaiTypos(text));
+}
+
 function getAiSummaryRangeFromPrompt(prompt: string): DateRangePreset | null {
   const trimmed = normalizeCommonThaiTypos(prompt.trim());
 
@@ -2752,6 +2757,117 @@ async function tryHandleRetrievedAiPrompt(input: {
   });
 
   return result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลได้";
+}
+
+function buildRetrievedFileContext(input: {
+  user: {
+    role: string;
+    nickname?: string | null;
+    line_display_name?: string | null;
+  };
+  files: Array<{
+    id: string;
+    fileName: string;
+    originalFileName: string | null;
+    mimeType: string | null;
+    sizeBytes: number | null;
+    reviewStatus?: string | null;
+    reviewMessage?: string | null;
+    reviewReason?: string | null;
+    driveSyncStatus?: string | null;
+    driveUrl?: string | null;
+    localDiskUrl?: string | null;
+    createdAt?: string | null;
+  }>;
+  aiContextConfig: {
+    botInstruction?: string | null;
+    persona?: RolePersonaRow | null;
+  };
+}) {
+  const verifiedPayload = {
+    source: "uploaded_files",
+    total: input.files.length,
+    files: input.files.map((file) => ({
+      id: file.id,
+      fileName: file.originalFileName ?? file.fileName,
+      mimeType: file.mimeType ?? "unknown",
+      sizeBytes: file.sizeBytes ?? null,
+      reviewStatus: file.reviewStatus ?? "none",
+      reviewMessage: file.reviewMessage ?? null,
+      reviewReason: file.reviewReason ?? null,
+      driveSyncStatus: file.driveSyncStatus ?? "unknown",
+      hasDriveUrl: Boolean(file.driveUrl),
+      hasLocalCopy: Boolean(file.localDiskUrl),
+      createdAt: file.createdAt ?? null
+    }))
+  };
+
+  return [
+    buildRoleContext(input.user, input.aiContextConfig),
+    "You are in explicit AI mode.",
+    "Use only the verified file registry data below.",
+    "Do not invent file contents, page contents, or summaries of the document body.",
+    "You may summarize file metadata, status, review flow, and likely next step only.",
+    "If the user asks about actual document contents and no extracted preview exists, say clearly that the system only has file metadata right now.",
+    `Verified file data: ${JSON.stringify(verifiedPayload)}`
+  ].join("\n");
+}
+
+async function tryHandleRetrievedFileAiPrompt(input: {
+  prompt: string;
+  user: {
+    id: string | null;
+    role: string;
+    nickname?: string | null;
+    line_display_name?: string | null;
+  };
+  lineUserId: string;
+}): Promise<string | null> {
+  const normalizedPrompt = normalizeCommonThaiTypos(input.prompt.trim());
+  if (!containsAiFileKeyword(normalizedPrompt)) {
+    return null;
+  }
+
+  const asksLatestFile =
+    /(ไฟล์ล่าสุด|เอกสารล่าสุด|รูปล่าสุด|ไฟล์นี้|เอกสารนี้)/i.test(normalizedPrompt) ||
+    /สรุปไฟล์/i.test(normalizedPrompt) ||
+    /สถานะไฟล์/i.test(normalizedPrompt);
+  const asksRecentFiles = /(ไฟล์ล่าสุด.*กี่|ไฟล์ช่วงนี้|ไฟล์最近|ไฟล์ไม่กี่รายการล่าสุด|ไฟล์ล่าสุดหลายรายการ)/i.test(
+    normalizedPrompt
+  );
+
+  if (!asksLatestFile && !asksRecentFiles) {
+    return null;
+  }
+
+  const [files, aiContextConfig] = await Promise.all([
+    asksRecentFiles
+      ? getRecentUploadedFilesForLineUser(input.lineUserId, 5)
+      : getRecentUploadedFilesForLineUser(input.lineUserId, 3),
+    getAIContextConfig(input.user.role)
+  ]);
+
+  if (files.length === 0) {
+    return "ตอนนี้ยังไม่พบไฟล์ที่ยืนยันได้ในระบบสำหรับบัญชีนี้ครับ";
+  }
+
+  const result = await requestGatewayChat({
+    prompt: input.prompt,
+    policy: config.KOYEB0_DEFAULT_POLICY,
+    context: buildRetrievedFileContext({
+      user: input.user,
+      files,
+      aiContextConfig
+    }),
+    metadata: {
+      source: "line_ai_retrieved_file_summary",
+      lineUserId: input.lineUserId,
+      role: input.user.role,
+      fileCount: files.length
+    }
+  });
+
+  return result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลไฟล์ได้";
 }
 
 async function createScheduleCard(lineUserId: string, requestedByUserId: string | null) {
@@ -3271,6 +3387,27 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
       return;
     }
 
+    const retrievedFileAiResult = await tryHandleRetrievedFileAiPrompt({
+      prompt,
+      user: {
+        id: user.id,
+        role: user.role,
+        nickname: user.nickname ?? null,
+        line_display_name: user.line_display_name ?? null
+      },
+      lineUserId
+    });
+
+    if (retrievedFileAiResult) {
+      await logConversation(lineUserId, user.id, text, retrievedFileAiResult);
+      await replyText(event.replyToken, retrievedFileAiResult, {
+        title: "AI Mode",
+        accentColor: "#7c3aed",
+        quickReplyExit: true
+      });
+      return;
+    }
+
     if (shouldRouteAiPromptToQuickAction(prompt)) {
       const quickActionResult = await tryHandleCommand({
         text: prompt,
@@ -3343,6 +3480,27 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
     if (retrievedAiResult) {
       await logConversation(lineUserId, user.id, text, retrievedAiResult);
       await replyText(event.replyToken, retrievedAiResult, {
+        title: "AI Mode",
+        accentColor: "#7c3aed",
+        quickReplyExit: true
+      });
+      return;
+    }
+
+    const retrievedFileAiResult = await tryHandleRetrievedFileAiPrompt({
+      prompt: trimmed,
+      user: {
+        id: user.id,
+        role: user.role,
+        nickname: user.nickname ?? null,
+        line_display_name: user.line_display_name ?? null
+      },
+      lineUserId
+    });
+
+    if (retrievedFileAiResult) {
+      await logConversation(lineUserId, user.id, text, retrievedFileAiResult);
+      await replyText(event.replyToken, retrievedFileAiResult, {
         title: "AI Mode",
         accentColor: "#7c3aed",
         quickReplyExit: true
