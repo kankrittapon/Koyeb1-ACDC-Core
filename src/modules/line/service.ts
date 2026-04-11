@@ -663,6 +663,26 @@ function formatCardTime(date: Date): string {
   return `${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
 }
 
+function formatBangkokDateForQuery(date: Date): string {
+  const parts = getBangkokDateTimeParts(date);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function buildCalendarQrUrl(date: Date): string {
+  const rawBaseUrl = config.DASHBOARD_CARD_URL ?? config.NEXTJS_FRONTEND_URL ?? "https://example.com";
+
+  try {
+    const url = new URL(rawBaseUrl);
+    if (url.pathname === "/" || url.pathname === "") {
+      url.pathname = "/calendar";
+    }
+    url.searchParams.set("date", formatBangkokDateForQuery(date));
+    return url.toString();
+  } catch {
+    return rawBaseUrl;
+  }
+}
+
 type DateRangePreset = {
   start: Date;
   end: Date;
@@ -2438,7 +2458,7 @@ async function createScheduleCard(lineUserId: string, requestedByUserId: string 
     timeZone: config.APP_TIMEZONE
   }).format(start);
 
-  const qrUrl = config.DASHBOARD_CARD_URL ?? config.NEXTJS_FRONTEND_URL ?? "https://example.com";
+  const qrUrl = buildCalendarQrUrl(start);
   const card = await generateScheduleCard({
     dateLabel: formatCardDateLabel(start),
     qrUrl,
