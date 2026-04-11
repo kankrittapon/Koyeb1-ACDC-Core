@@ -106,6 +106,11 @@ create table if not exists public.uploaded_files (
   local_disk_url text,
   drive_file_id text,
   drive_url text,
+  review_status text not null default 'none',
+  review_requested_to_user_id uuid references public.users(id) on delete set null,
+  review_target_user_id uuid references public.users(id) on delete set null,
+  review_message text,
+  review_reason text,
   drive_sync_status text not null default 'pending',
   drive_sync_error text,
   updated_at timestamptz not null default now(),
@@ -121,6 +126,11 @@ alter table public.uploaded_files add column if not exists local_disk_path text;
 alter table public.uploaded_files add column if not exists local_disk_url text;
 alter table public.uploaded_files add column if not exists drive_sync_status text not null default 'pending';
 alter table public.uploaded_files add column if not exists drive_sync_error text;
+alter table public.uploaded_files add column if not exists review_status text not null default 'none';
+alter table public.uploaded_files add column if not exists review_requested_to_user_id uuid references public.users(id) on delete set null;
+alter table public.uploaded_files add column if not exists review_target_user_id uuid references public.users(id) on delete set null;
+alter table public.uploaded_files add column if not exists review_message text;
+alter table public.uploaded_files add column if not exists review_reason text;
 alter table public.uploaded_files add column if not exists updated_at timestamptz not null default now();
 
 create index if not exists idx_uploaded_files_line_user_id on public.uploaded_files(line_user_id);

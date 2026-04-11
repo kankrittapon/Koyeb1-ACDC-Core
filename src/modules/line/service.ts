@@ -7,11 +7,13 @@ import { uploadFileToDrive } from "../drive/service";
 import {
   bufferToReadable,
   createUploadedFileRecord,
+  getUploadedFileById,
   getLatestUploadedFileForLineUser,
   markUploadedFileDriveFailed,
   markUploadedFileDriveSynced,
   readStreamToBuffer,
-  saveIncomingFileToDisk
+  saveIncomingFileToDisk,
+  updateUploadedFileReviewState
 } from "../files/service";
 import { generateScheduleCard } from "../cards/service";
 
@@ -50,6 +52,8 @@ const summaryRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const staffMessagingRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
 const acknowledgementRequesterRoles = new Set(["BOSS"]);
 const acknowledgementTargetRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
+const secretaryRoles = new Set(["SECRETARY"]);
+const fileReviewSubmitterRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
 const weekdayMap = new Map<string, number>([
   ["อาทิตย์", 0],
   ["วันอาทิตย์", 0],
@@ -83,6 +87,7 @@ const fileContextCache = new Map<
   }
 >();
 const aiModeState = new Map<string, number>();
+const pendingRejectReviewState = new Map<string, { fileId: string; requesterUserId: string | null }>();
 const AI_MODE_IDLE_MS = 15 * 60 * 1000;
 
 const thaiWeekdayShort = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัส", "ศุกร์", "เสาร์"];
@@ -150,6 +155,18 @@ type AcknowledgementRequestInput = {
   targetDisplayName: string;
 };
 
+type FileReviewAction = "approve" | "reject";
+
+type FileReviewRequestInput = {
+  fileId: string;
+  fileName: string;
+  senderRole: string;
+  senderDisplayName: string;
+  instruction: string;
+  openUrl: string;
+  driveUrl?: string | null;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -215,6 +232,14 @@ function canRequestAcknowledgement(role: string): boolean {
 
 function canReceiveAcknowledgement(role: string): boolean {
   return acknowledgementTargetRoles.has(role.toUpperCase());
+}
+
+function isSecretaryRole(role: string): boolean {
+  return secretaryRoles.has(role.toUpperCase());
+}
+
+function requiresSecretaryReview(role: string): boolean {
+  return fileReviewSubmitterRoles.has(role.toUpperCase());
 }
 
 function parseDateInput(input: string, endOfDay = false): Date | null {
@@ -1317,6 +1342,126 @@ function buildAcknowledgementFlexMessage(input: AcknowledgementRequestInput) {
   } as any;
 }
 
+function buildFileReviewFlexMessage(input: FileReviewRequestInput) {
+  const buttons: any[] = [
+    {
+      type: "button",
+      style: "primary",
+      color: "#2563eb",
+      action: {
+        type: "uri" as const,
+        label: "เปิดไฟล์",
+        uri: input.openUrl
+      }
+    },
+    {
+      type: "button",
+      style: "primary",
+      color: "#15803d",
+      action: {
+        type: "postback" as const,
+        label: "อนุมัติ",
+        data: `file-review|${input.fileId}|approve`,
+        displayText: "อนุมัติไฟล์นี้"
+      }
+    },
+    {
+      type: "button",
+      style: "secondary",
+      action: {
+        type: "postback" as const,
+        label: "ปฏิเสธ",
+        data: `file-review|${input.fileId}|reject`,
+        displayText: "ปฏิเสธไฟล์นี้"
+      }
+    }
+  ];
+
+  if (input.driveUrl) {
+    buttons.splice(1, 0, {
+      type: "button",
+      style: "secondary",
+      action: {
+        type: "uri" as const,
+        label: "Google Drive",
+        uri: input.driveUrl
+      }
+    });
+  }
+
+  return {
+    type: "flex" as const,
+    altText: `เอกสารรอเลขาตรวจ: ${input.fileName}`,
+    contents: {
+      type: "bubble" as const,
+      size: "giga",
+      header: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "16px",
+        backgroundColor: "#7c3aed",
+        contents: [
+          {
+            type: "text" as const,
+            text: "ไฟล์รอเลขาตรวจ",
+            color: "#ffffff",
+            size: "lg",
+            weight: "bold"
+          }
+        ]
+      },
+      body: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        paddingAll: "18px",
+        spacing: "md",
+        contents: [
+          {
+            type: "text" as const,
+            text: input.fileName,
+            wrap: true,
+            weight: "bold",
+            size: "md",
+            color: "#111827"
+          },
+          {
+            type: "text" as const,
+            text: `ผู้ส่ง: ${input.senderDisplayName} (${input.senderRole})`,
+            wrap: true,
+            size: "sm",
+            color: "#475569"
+          },
+          {
+            type: "separator" as const,
+            margin: "sm"
+          },
+          {
+            type: "text" as const,
+            text: input.instruction,
+            wrap: true,
+            size: "sm",
+            color: "#111827"
+          },
+          {
+            type: "text" as const,
+            text: "หากปฏิเสธ ระบบจะขอเหตุผลเพิ่มเติมทันที",
+            wrap: true,
+            size: "xs",
+            color: "#64748b"
+          }
+        ]
+      },
+      footer: {
+        type: "box" as const,
+        layout: "vertical" as const,
+        spacing: "sm",
+        paddingAll: "16px",
+        contents: buttons
+      }
+    }
+  } as any;
+}
+
 function buildFileDeliveryFlexMessage(input: FileDeliveryCardInput) {
   const actions: any[] = [
     {
@@ -1596,6 +1741,7 @@ async function findStaffUser(target: string) {
 async function sendStaffMessage(input: {
   senderUserId: string | null;
   senderRole: string;
+  senderDisplayName?: string;
   target: string;
   message: string;
   includeCachedFile?: boolean;
@@ -1627,6 +1773,56 @@ async function sendStaffMessage(input: {
     attachmentRecordId && config.PUBLIC_BASE_URL
       ? `${config.PUBLIC_BASE_URL}/f/${attachmentRecordId}`
       : attachmentLocalUrl || attachmentDriveUrl || null;
+  const senderDisplayName = input.senderDisplayName ?? input.senderRole;
+
+  if (input.includeCachedFile && attachmentRecordId && requiresSecretaryReview(input.senderRole)) {
+    const secretaryUser = await findStaffUser("SECRETARY");
+    if (!secretaryUser || !secretaryUser.line_user_id) {
+      return "⚠️ ยังไม่พบเลขาในระบบสำหรับรับตรวจไฟล์ก่อนส่งให้ผู้พันครับ";
+    }
+
+    const bossUser = await findStaffUser("BOSS");
+    await updateUploadedFileReviewState({
+      id: attachmentRecordId,
+      reviewStatus: "pending_secretary_review",
+      reviewRequestedToUserId: secretaryUser.id,
+      reviewTargetUserId: bossUser?.id ?? null,
+      reviewMessage: input.message,
+      reviewReason: null
+    });
+
+    if (attachmentName && shortOpenUrl) {
+      await getLineClient().pushMessage(
+        secretaryUser.line_user_id,
+        buildFileReviewFlexMessage({
+          fileId: attachmentRecordId,
+          fileName: attachmentName,
+          senderRole: input.senderRole,
+          senderDisplayName,
+          instruction: input.message,
+          openUrl: shortOpenUrl,
+          driveUrl: attachmentDriveUrl || undefined
+        })
+      );
+    } else {
+      await pushTextMessage(
+        secretaryUser.line_user_id,
+        `📨 มีไฟล์จาก ${senderDisplayName} รอตรวจ\n\n${input.message}`
+      );
+    }
+
+    await supabaseAdmin.from("staff_messages").insert({
+      sender_user_id: input.senderUserId,
+      target_user_id: secretaryUser.id,
+      target_line_user_id: secretaryUser.line_user_id,
+      message: `[REVIEW] ${input.message}`,
+      file_url: attachmentDriveUrl ?? attachmentLocalUrl ?? null,
+      status: "pending_secretary_review",
+      sent_at: new Date().toISOString()
+    });
+
+    return `✅ ส่งไฟล์เข้าเลขาเพื่อตรวจแล้ว เมื่อเลขาอนุมัติ ระบบจะส่งต่อให้ผู้พันครับ`;
+  }
 
   if (attachmentName || attachmentDriveUrl || attachmentLocalUrl) {
     fullMessage += "\n\n📎 ไฟล์แนบพร้อมคำสั่ง";
@@ -1811,6 +2007,169 @@ async function handleAcknowledgementPostback(
   });
 }
 
+async function notifyFileSubmitter(input: {
+  fileRecord: Awaited<ReturnType<typeof getUploadedFileById>>;
+  message: string;
+  title: string;
+  accentColor: string;
+}) {
+  const submitterLineUserId = input.fileRecord?.lineUserId;
+  if (!submitterLineUserId) {
+    return;
+  }
+
+  await pushTextMessage(submitterLineUserId, input.message, {
+    title: input.title,
+    accentColor: input.accentColor
+  });
+}
+
+async function forwardReviewedFileToBoss(input: {
+  fileRecordId: string;
+  secretaryDisplayName: string;
+  instruction: string | null;
+}) {
+  const fileRecord = await getUploadedFileById(input.fileRecordId);
+  if (!fileRecord) {
+    return "⚠️ ไม่พบไฟล์รายการนี้ในระบบครับ";
+  }
+
+  const bossUser = await findStaffUser("BOSS");
+  if (!bossUser || !bossUser.line_user_id) {
+    return "⚠️ ยังไม่พบบัญชีผู้พันในระบบ จึงส่งไฟล์ต่อให้ไม่ได้ครับ";
+  }
+
+  const fileName = fileRecord.originalFileName ?? fileRecord.fileName;
+  const openUrl =
+    config.PUBLIC_BASE_URL && fileRecord.id
+      ? `${config.PUBLIC_BASE_URL}/f/${fileRecord.id}`
+      : fileRecord.localDiskUrl || fileRecord.driveUrl;
+
+  if (!openUrl) {
+    return "⚠️ ไฟล์นี้ยังไม่มีลิงก์เปิดใช้งานในระบบครับ";
+  }
+
+  const instruction = input.instruction?.trim() || "เลขาอนุมัติเอกสารและส่งต่อให้ผู้พันแล้ว";
+  await getLineClient().pushMessage(
+    bossUser.line_user_id,
+    buildFileDeliveryFlexMessage({
+      senderRole: "SECRETARY",
+      instruction,
+      fileRecordId: fileRecord.id,
+      fileName,
+      openUrl,
+      driveUrl: fileRecord.driveUrl || undefined
+    })
+  );
+
+  await updateUploadedFileReviewState({
+    id: fileRecord.id,
+    reviewStatus: "approved",
+    reviewRequestedToUserId: null,
+    reviewTargetUserId: bossUser.id,
+    reviewMessage: instruction,
+    reviewReason: null
+  });
+
+  await notifyFileSubmitter({
+    fileRecord,
+    message: `✅ เลขาอนุมัติไฟล์ "${fileName}" แล้ว และระบบส่งต่อให้ผู้พันเรียบร้อยครับ`,
+    title: "ผลตรวจไฟล์",
+    accentColor: "#15803d"
+  });
+
+  return `✅ เลขาอนุมัติแล้ว และระบบส่งไฟล์ "${fileName}" ต่อให้ผู้พันเรียบร้อยครับ`;
+}
+
+async function rejectReviewedFile(input: {
+  fileRecordId: string;
+  secretaryDisplayName: string;
+  reason: string;
+}) {
+  const fileRecord = await getUploadedFileById(input.fileRecordId);
+  if (!fileRecord) {
+    return "⚠️ ไม่พบไฟล์รายการนี้ในระบบครับ";
+  }
+
+  const fileName = fileRecord.originalFileName ?? fileRecord.fileName;
+  await updateUploadedFileReviewState({
+    id: fileRecord.id,
+    reviewStatus: "rejected",
+    reviewRequestedToUserId: null,
+    reviewTargetUserId: fileRecord.reviewTargetUserId ?? null,
+    reviewMessage: fileRecord.reviewMessage ?? null,
+    reviewReason: input.reason
+  });
+
+  await notifyFileSubmitter({
+    fileRecord,
+    message: `⚠️ เลขาปฏิเสธไฟล์ "${fileName}"\nเหตุผล: ${input.reason}`,
+    title: "ผลตรวจไฟล์",
+    accentColor: "#b45309"
+  });
+
+  return `✅ ปฏิเสธไฟล์ "${fileName}" แล้ว และแจ้งเหตุผลกลับผู้ส่งเรียบร้อยครับ`;
+}
+
+async function handleFileReviewPostback(
+  event: WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
+) {
+  const lineUserId = event.source.userId;
+  if (!lineUserId) {
+    return;
+  }
+
+  const match = event.postback.data.match(/^file-review\|([^|]+)\|(approve|reject)$/);
+  if (!match) {
+    await replyText(event.replyToken, "⚠️ รูปแบบการตรวจไฟล์ไม่ถูกต้องครับ");
+    return;
+  }
+
+  const [, fileId, action] = match as [string, string, FileReviewAction];
+  const actingUser = await ensureLineUser(lineUserId);
+  if (!isSecretaryRole(actingUser.role)) {
+    await replyText(event.replyToken, "⚠️ การตรวจไฟล์ชุดนี้เปิดให้เฉพาะเลขาครับ");
+    return;
+  }
+
+  const fileRecord = await getUploadedFileById(fileId);
+  if (!fileRecord) {
+    await replyText(event.replyToken, "⚠️ ไม่พบไฟล์รายการนี้ในระบบครับ");
+    return;
+  }
+
+  if (fileRecord.reviewStatus !== "pending_secretary_review") {
+    await replyText(event.replyToken, "ℹ️ ไฟล์รายการนี้ถูกดำเนินการไปแล้วครับ");
+    return;
+  }
+
+  if (action === "approve") {
+    const message = await forwardReviewedFileToBoss({
+      fileRecordId: fileId,
+      secretaryDisplayName: resolveUserDisplayName(actingUser),
+      instruction: fileRecord.reviewMessage ?? null
+    });
+    await replyText(event.replyToken, message, {
+      title: "ตรวจไฟล์",
+      accentColor: "#15803d"
+    });
+    return;
+  }
+
+  pendingRejectReviewState.set(lineUserId, {
+    fileId,
+    requesterUserId: fileRecord.userId ?? null
+  });
+  await replyText(
+    event.replyToken,
+    "📝 กรุณาพิมพ์เหตุผลที่ปฏิเสธไฟล์นี้ได้เลยครับ ระบบจะส่งกลับไปหาผู้ส่งทันที",
+    {
+      title: "ปฏิเสธไฟล์",
+      accentColor: "#b45309"
+    }
+  );
+}
+
 async function createCalendarEventFromCommand(input: {
   title: string;
   startAt: string;
@@ -1991,6 +2350,9 @@ async function tryHandleCommand(input: {
   user: {
     id: string | null;
     role: string;
+    nickname?: string | null;
+    line_display_name?: string | null;
+    username?: string | null;
   };
   lineUserId: string;
 }): Promise<string | null> {
@@ -2181,6 +2543,7 @@ async function tryHandleCommand(input: {
     return sendStaffMessage({
       senderUserId: input.user.id,
       senderRole: input.user.role,
+      senderDisplayName: resolveUserDisplayName(input.user),
       target: staffMatch[1].trim(),
       message: staffMatch[2].trim(),
       lineUserId: input.lineUserId
@@ -2228,6 +2591,7 @@ async function tryHandleCommand(input: {
     return sendStaffMessage({
       senderUserId: input.user.id,
       senderRole: input.user.role,
+      senderDisplayName: resolveUserDisplayName(input.user),
       target,
       message,
       includeCachedFile: true,
@@ -2333,6 +2697,27 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
   const trimmed = text.trim();
   const aiModeActive = isAIModeActive(lineUserId);
 
+  const pendingRejectReview = pendingRejectReviewState.get(lineUserId);
+  if (pendingRejectReview) {
+    if (!trimmed) {
+      await replyText(event.replyToken, "⚠️ กรุณาระบุเหตุผลที่ปฏิเสธไฟล์ด้วยครับ");
+      return;
+    }
+
+    pendingRejectReviewState.delete(lineUserId);
+    const rejectResult = await rejectReviewedFile({
+      fileRecordId: pendingRejectReview.fileId,
+      secretaryDisplayName: resolveUserDisplayName(user),
+      reason: trimmed
+    });
+    await logConversation(lineUserId, user.id, text, rejectResult);
+    await replyText(event.replyToken, rejectResult, {
+      title: "ปฏิเสธไฟล์",
+      accentColor: "#b45309"
+    });
+    return;
+  }
+
   if (user.role === "GUEST") {
     const guestMessage =
       "⚠️ ขออภัยครับ ระบบยังไม่รู้จักคุณในฐานะพนักงาน กรุณาให้ Admin กำหนดสิทธิ์ให้ในระบบก่อนครับ";
@@ -2416,7 +2801,10 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
     text,
     user: {
       id: user.id,
-      role: user.role
+      role: user.role,
+      nickname: user.nickname ?? null,
+      line_display_name: user.line_display_name ?? null,
+      username: user.username ?? null
     },
     lineUserId
   });
@@ -2441,6 +2829,14 @@ export async function handleLineEvent(event: WebhookEvent): Promise<void> {
   await logWebhookEvent(event, "received");
 
   if (event.type === "postback") {
+    if ((event as WebhookEvent & { postback?: { data?: string } }).postback?.data?.startsWith("file-review|")) {
+      await handleFileReviewPostback(
+        event as WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
+      );
+      await logWebhookEvent(event, "processed");
+      return;
+    }
+
     await handleAcknowledgementPostback(
       event as WebhookEvent & { type: "postback"; postback: { data: string }; replyToken: string; source: { userId?: string } }
     );

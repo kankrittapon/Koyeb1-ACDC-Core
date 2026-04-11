@@ -33,6 +33,13 @@ export type UploadedFileRecord = {
   localDiskPath: string | null;
   storedFileName: string | null;
   sizeBytes: number | null;
+  userId?: string | null;
+  lineUserId?: string | null;
+  reviewStatus?: string | null;
+  reviewRequestedToUserId?: string | null;
+  reviewTargetUserId?: string | null;
+  reviewReason?: string | null;
+  reviewMessage?: string | null;
 };
 
 function sanitizeFileName(fileName: string): string {
@@ -135,7 +142,7 @@ export async function createUploadedFileRecord(
   };
 
   const richSelect =
-    "id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes";
+    "id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message";
 
   const richResponse = await supabaseAdmin
     .from("uploaded_files")
@@ -153,7 +160,14 @@ export async function createUploadedFileRecord(
       localDiskUrl: richResponse.data.local_disk_url ?? null,
       localDiskPath: richResponse.data.local_disk_path ?? null,
       storedFileName: richResponse.data.stored_file_name ?? null,
-      sizeBytes: richResponse.data.size_bytes ?? null
+      sizeBytes: richResponse.data.size_bytes ?? null,
+      userId: richResponse.data.user_id ?? null,
+      lineUserId: richResponse.data.line_user_id ?? null,
+      reviewStatus: richResponse.data.review_status ?? null,
+      reviewRequestedToUserId: richResponse.data.review_requested_to_user_id ?? null,
+      reviewTargetUserId: richResponse.data.review_target_user_id ?? null,
+      reviewReason: richResponse.data.review_reason ?? null,
+      reviewMessage: richResponse.data.review_message ?? null
     };
   }
 
@@ -183,7 +197,14 @@ export async function createUploadedFileRecord(
     localDiskUrl: input.local.publicUrl,
     localDiskPath: input.local.absolutePath,
     storedFileName: input.local.storedFileName,
-    sizeBytes: input.local.sizeBytes
+    sizeBytes: input.local.sizeBytes,
+    userId: input.userId,
+    lineUserId: input.lineUserId,
+    reviewStatus: null,
+    reviewRequestedToUserId: null,
+    reviewTargetUserId: null,
+    reviewReason: null,
+    reviewMessage: null
   };
 }
 
@@ -202,7 +223,7 @@ export async function markUploadedFileDriveSynced(input: {
       updated_at: new Date().toISOString()
     })
     .eq("id", input.id)
-    .select("id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes")
+    .select("id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message")
     .single();
 
   if (!richUpdate.error && richUpdate.data) {
@@ -215,7 +236,14 @@ export async function markUploadedFileDriveSynced(input: {
       localDiskUrl: richUpdate.data.local_disk_url ?? null,
       localDiskPath: richUpdate.data.local_disk_path ?? null,
       storedFileName: richUpdate.data.stored_file_name ?? null,
-      sizeBytes: richUpdate.data.size_bytes ?? null
+      sizeBytes: richUpdate.data.size_bytes ?? null,
+      userId: richUpdate.data.user_id ?? null,
+      lineUserId: richUpdate.data.line_user_id ?? null,
+      reviewStatus: richUpdate.data.review_status ?? null,
+      reviewRequestedToUserId: richUpdate.data.review_requested_to_user_id ?? null,
+      reviewTargetUserId: richUpdate.data.review_target_user_id ?? null,
+      reviewReason: richUpdate.data.review_reason ?? null,
+      reviewMessage: richUpdate.data.review_message ?? null
     } satisfies UploadedFileRecord;
   }
 
@@ -242,7 +270,14 @@ export async function markUploadedFileDriveSynced(input: {
     localDiskUrl: null,
     localDiskPath: null,
     storedFileName: null,
-    sizeBytes: null
+    sizeBytes: null,
+    userId: null,
+    lineUserId: null,
+    reviewStatus: null,
+    reviewRequestedToUserId: null,
+    reviewTargetUserId: null,
+    reviewReason: null,
+    reviewMessage: null
   } satisfies UploadedFileRecord;
 }
 
@@ -264,7 +299,7 @@ export async function markUploadedFileDriveFailed(input: { id: string; errorMess
 export async function getLatestUploadedFileForLineUser(lineUserId: string): Promise<UploadedFileRecord | null> {
   const richResponse = await supabaseAdmin
     .from("uploaded_files")
-    .select("id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes")
+    .select("id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message")
     .eq("line_user_id", lineUserId)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -284,7 +319,14 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
       localDiskUrl: row.local_disk_url ?? null,
       localDiskPath: row.local_disk_path ?? null,
       storedFileName: row.stored_file_name ?? null,
-      sizeBytes: row.size_bytes ?? null
+      sizeBytes: row.size_bytes ?? null,
+      userId: row.user_id ?? null,
+      lineUserId: row.line_user_id ?? null,
+      reviewStatus: row.review_status ?? null,
+      reviewRequestedToUserId: row.review_requested_to_user_id ?? null,
+      reviewTargetUserId: row.review_target_user_id ?? null,
+      reviewReason: row.review_reason ?? null,
+      reviewMessage: row.review_message ?? null
     };
   }
 
@@ -313,8 +355,108 @@ export async function getLatestUploadedFileForLineUser(lineUserId: string): Prom
     localDiskUrl: null,
     localDiskPath: null,
     storedFileName: null,
-    sizeBytes: null
+    sizeBytes: null,
+    userId: null,
+    lineUserId: lineUserId,
+    reviewStatus: null,
+    reviewRequestedToUserId: null,
+    reviewTargetUserId: null,
+    reviewReason: null,
+    reviewMessage: null
   };
+}
+
+export async function getUploadedFileById(id: string): Promise<UploadedFileRecord | null> {
+  const response = await supabaseAdmin
+    .from("uploaded_files")
+    .select("id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes,review_status,review_requested_to_user_id,review_target_user_id,review_reason,review_message")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!response.error) {
+    if (!response.data) {
+      return null;
+    }
+
+    const row = response.data;
+    return {
+      id: row.id,
+      fileName: row.file_name,
+      originalFileName: row.original_file_name ?? null,
+      mimeType: row.mime_type ?? null,
+      driveUrl: row.drive_url ?? null,
+      localDiskUrl: row.local_disk_url ?? null,
+      localDiskPath: row.local_disk_path ?? null,
+      storedFileName: row.stored_file_name ?? null,
+      sizeBytes: row.size_bytes ?? null,
+      userId: row.user_id ?? null,
+      lineUserId: row.line_user_id ?? null,
+      reviewStatus: row.review_status ?? null,
+      reviewRequestedToUserId: row.review_requested_to_user_id ?? null,
+      reviewTargetUserId: row.review_target_user_id ?? null,
+      reviewReason: row.review_reason ?? null,
+      reviewMessage: row.review_message ?? null
+    };
+  }
+
+  const legacyResponse = await supabaseAdmin
+    .from("uploaded_files")
+    .select("id,user_id,line_user_id,file_name,original_file_name,mime_type,drive_url,local_disk_url,local_disk_path,stored_file_name,size_bytes")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (legacyResponse.error) {
+    throw response.error ?? legacyResponse.error;
+  }
+
+  if (!legacyResponse.data) {
+    return null;
+  }
+
+  const row = legacyResponse.data;
+  return {
+    id: row.id,
+    fileName: row.file_name,
+    originalFileName: row.original_file_name ?? null,
+    mimeType: row.mime_type ?? null,
+    driveUrl: row.drive_url ?? null,
+    localDiskUrl: row.local_disk_url ?? null,
+    localDiskPath: row.local_disk_path ?? null,
+    storedFileName: row.stored_file_name ?? null,
+    sizeBytes: row.size_bytes ?? null,
+    userId: row.user_id ?? null,
+    lineUserId: row.line_user_id ?? null,
+    reviewStatus: null,
+    reviewRequestedToUserId: null,
+    reviewTargetUserId: null,
+    reviewReason: null,
+    reviewMessage: null
+  };
+}
+
+export async function updateUploadedFileReviewState(input: {
+  id: string;
+  reviewStatus: string;
+  reviewRequestedToUserId?: string | null;
+  reviewTargetUserId?: string | null;
+  reviewMessage?: string | null;
+  reviewReason?: string | null;
+}) {
+  const update = await supabaseAdmin
+    .from("uploaded_files")
+    .update({
+      review_status: input.reviewStatus,
+      review_requested_to_user_id: input.reviewRequestedToUserId ?? null,
+      review_target_user_id: input.reviewTargetUserId ?? null,
+      review_message: input.reviewMessage ?? null,
+      review_reason: input.reviewReason ?? null,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", input.id);
+
+  if (update.error && update.error.code !== "PGRST204") {
+    throw update.error;
+  }
 }
 
 export function bufferToReadable(buffer: Buffer): NodeJS.ReadableStream {
