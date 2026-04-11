@@ -830,106 +830,120 @@ function buildRichEventDescription(event: CalendarEventRow): string {
   return lines.join("\n").trim();
 }
 
+function normalizeCompactThai(text: string): string {
+  return text.trim().replace(/\s+/g, "");
+}
+
+function stripThaiPoliteness(text: string): string {
+  return text
+    .trim()
+    .replace(/(หน่อย|ที|ทีนะ|ทีครับ|ทีคะ|ทีค่ะ|นะ|นะครับ|นะคะ|นะค่ะ|ครับ|คะ|ค่ะ|ด้วย|ให้หน่อย|ให้ที)$/i, "")
+    .trim();
+}
+
+function buildDateIntentRegex(
+  dateToken: string,
+  options?: { requireSummary?: boolean }
+): RegExp {
+  const summaryPrefix = options?.requireSummary ? "(?:ขอ|ช่วย)?สรุป(?:รายงาน)?งาน" : "(?:(?:ขอ|ช่วย)?ดู)?(?:ตาราง|ตารางงาน|งาน)?";
+  return new RegExp(
+    `^(?:${summaryPrefix})?(?:มี)?(?:อะไร)?(?:ที่ต้องทำ)?${dateToken}(?:มีอะไรบ้าง|ล่ะ|บ้าง)?(?:หน่อย|ที|นะ|ครับ|คะ|ค่ะ)?$`,
+    "i"
+  );
+}
+
+function matchesScheduleIntent(text: string, dateToken: string): boolean {
+  const trimmed = stripThaiPoliteness(text);
+  const compact = normalizeCompactThai(trimmed);
+  return (
+    trimmed === `ตาราง${dateToken}` ||
+    trimmed === `ตารางงาน${dateToken}` ||
+    trimmed === `ดูตาราง${dateToken}` ||
+    trimmed === `ดูตารางงาน${dateToken}` ||
+    trimmed === `งาน${dateToken}` ||
+    trimmed === `${dateToken}มีงานอะไรบ้าง` ||
+    trimmed === `มีงานอะไร${dateToken}` ||
+    trimmed === `มีตารางอะไร${dateToken}` ||
+    trimmed === `มีอะไร${dateToken}บ้าง` ||
+    new RegExp(`^ตารางของ.*${dateToken}$`, "i").test(trimmed) ||
+    buildDateIntentRegex(dateToken).test(compact)
+  );
+}
+
+function matchesSummaryIntent(text: string, dateToken: string): boolean {
+  const trimmed = stripThaiPoliteness(text);
+  const compact = normalizeCompactThai(trimmed);
+  return (
+    trimmed === `สรุปงาน${dateToken}` ||
+    trimmed === `รายงาน${dateToken}` ||
+    trimmed === `ช่วยสรุปงาน${dateToken}` ||
+    trimmed === `ขอสรุปงาน${dateToken}` ||
+    trimmed === `${dateToken}สรุปงาน` ||
+    buildDateIntentRegex(dateToken, { requireSummary: true }).test(compact)
+  );
+}
+
 function normalizeTextCommand(text: string): string {
   const trimmed = text.trim();
-  const compact = trimmed.replace(/\s+/g, "");
+  const compact = normalizeCompactThai(trimmed);
 
   if (/^(วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?)$/i.test(trimmed)) {
     return `/clarify day | ${trimmed}`;
   }
 
-  if (
-    trimmed === "ตารางวันนี้" ||
-    trimmed === "ดูตารางวันนี้" ||
-    trimmed === "งานวันนี้" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?(ที่ต้องทำ)?วันนี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact) ||
-    /^ตารางของ.*วันนี้$/i.test(trimmed)
-  ) {
+  if (matchesScheduleIntent(trimmed, "วันนี้")) {
     return "/event today";
   }
 
-  if (
-    trimmed === "ตารางพรุ่งนี้" ||
-    trimmed === "ดูตารางพรุ่งนี้" ||
-    trimmed === "งานพรุ่งนี้" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?(ที่ต้องทำ)?พรุ่งนี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
-  ) {
+  if (matchesScheduleIntent(trimmed, "พรุ่งนี้")) {
     return "/event tomorrow";
   }
 
-  if (
-    trimmed === "ตารางมะรืน" ||
-    trimmed === "ดูตารางมะรืน" ||
-    trimmed === "งานมะรืน" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?(ที่ต้องทำ)?มะรืน(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
-  ) {
+  if (matchesScheduleIntent(trimmed, "มะรืน")) {
     return "/event dayaftertomorrow";
   }
 
-  if (
-    trimmed === "ตารางสัปดาห์นี้" ||
-    trimmed === "ดูตารางสัปดาห์นี้" ||
-    trimmed === "งานสัปดาห์นี้" ||
-    trimmed === "สัปดาห์นี้ล่ะ" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?สัปดาห์นี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact) ||
-    /^ตารางของ.*สัปดาห์นี้$/i.test(trimmed)
-  ) {
+  if (matchesScheduleIntent(trimmed, "สัปดาห์นี้") || trimmed === "สัปดาห์นี้ล่ะ") {
     return "/event week";
   }
 
-  if (
-    trimmed === "ตารางสัปดาห์หน้า" ||
-    trimmed === "ดูตารางสัปดาห์หน้า" ||
-    trimmed === "งานสัปดาห์หน้า" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?สัปดาห์หน้า(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact) ||
-    /^ตารางของ.*สัปดาห์หน้า$/i.test(trimmed)
-  ) {
+  if (matchesScheduleIntent(trimmed, "สัปดาห์หน้า")) {
     return "/event nextweek";
   }
 
-  if (
-    trimmed === "ตารางเดือนนี้" ||
-    trimmed === "ดูตารางเดือนนี้" ||
-    trimmed === "งานเดือนนี้" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?เดือนนี้(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
-  ) {
+  if (matchesScheduleIntent(trimmed, "เดือนนี้")) {
     return "/event month";
   }
 
-  if (
-    trimmed === "ตารางเดือนหน้า" ||
-    trimmed === "ดูตารางเดือนหน้า" ||
-    trimmed === "งานเดือนหน้า" ||
-    /^(ขอดู|ดู|มี)?งาน(อะไร)?เดือนหน้า(หน่อย)?(ครับ|คะ|ค่ะ)?$/i.test(compact)
-  ) {
+  if (matchesScheduleIntent(trimmed, "เดือนหน้า")) {
     return "/event nextmonth";
   }
 
-  if (trimmed === "สรุปงานวันนี้" || trimmed === "รายงานวันนี้") {
+  if (matchesSummaryIntent(trimmed, "วันนี้")) {
     return "/summary today";
   }
 
-  if (trimmed === "สรุปงานพรุ่งนี้" || trimmed === "รายงานพรุ่งนี้") {
+  if (matchesSummaryIntent(trimmed, "พรุ่งนี้")) {
     return "/summary tomorrow";
   }
 
-  if (trimmed === "สรุปงานมะรืน" || trimmed === "รายงานมะรืน") {
+  if (matchesSummaryIntent(trimmed, "มะรืน")) {
     return "/summary dayaftertomorrow";
   }
 
-  if (trimmed === "สรุปงานสัปดาห์นี้" || trimmed === "รายงานสัปดาห์นี้") {
+  if (matchesSummaryIntent(trimmed, "สัปดาห์นี้")) {
     return "/summary week";
   }
 
-  if (trimmed === "สรุปงานสัปดาห์หน้า" || trimmed === "รายงานสัปดาห์หน้า") {
+  if (matchesSummaryIntent(trimmed, "สัปดาห์หน้า")) {
     return "/summary nextweek";
   }
 
-  if (trimmed === "สรุปงานเดือนนี้" || trimmed === "รายงานเดือนนี้") {
+  if (matchesSummaryIntent(trimmed, "เดือนนี้")) {
     return "/summary month";
   }
 
-  if (trimmed === "สรุปงานเดือนหน้า" || trimmed === "รายงานเดือนหน้า") {
+  if (matchesSummaryIntent(trimmed, "เดือนหน้า")) {
     return "/summary nextmonth";
   }
 
@@ -943,7 +957,10 @@ function normalizeTextCommand(text: string): string {
     return "/card today";
   }
 
-  const staffNaturalMatch = trimmed.match(/^ส่งข้อความให้\s*(.+?)\s+ว่า\s+(.+)$/i);
+  const staffNaturalMatch =
+    trimmed.match(/^ส่งข้อความ(?:หา|ให้)\s*(.+?)\s+ว่า\s+(.+)$/i) ??
+    trimmed.match(/^ฝากข้อความ(?:หา|ให้)\s*(.+?)\s+ว่า\s+(.+)$/i) ??
+    trimmed.match(/^บอก(?:หา|ให้)?\s*(.+?)\s+ว่า\s+(.+)$/i);
   if (staffNaturalMatch) {
     return `/staff send | ${staffNaturalMatch[1].trim()} | ${staffNaturalMatch[2].trim()}`;
   }
@@ -956,6 +973,11 @@ function normalizeTextCommand(text: string): string {
   const assignMatch = trimmed.match(/^ส่งงานให้\s*(.+?)\s+(.+)$/i);
   if (assignMatch) {
     return `/staff send | ${assignMatch[1].trim()} | ${assignMatch[2].trim()}`;
+  }
+
+  const summaryRangeNaturalMatch = trimmed.match(/^สรุปงานช่วง\s+(.+?)\s+ถึง\s+(.+)$/i);
+  if (summaryRangeNaturalMatch) {
+    return `/summary range | ${summaryRangeNaturalMatch[1].trim()} | ${summaryRangeNaturalMatch[2].trim()}`;
   }
 
   const deleteNaturalMatch = trimmed.match(/^ลบกิจกรรม\s+(.+)$/i);
