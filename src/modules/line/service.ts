@@ -840,8 +840,54 @@ type CalendarEventRow = {
   end_at: string;
   location_display_name?: string | null;
   location_type?: string | null;
+  owner_user_id?: string | null;
+  created_by?: string | null;
   created_at?: string | null;
 };
+
+async function getPrimaryBossUserId(): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select("id")
+    .eq("role", "BOSS")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.id ?? null;
+}
+
+async function resolveDefaultEventOwnerUserId(input: {
+  actorUserId: string | null;
+  actorRole: string;
+}): Promise<string | null> {
+  const normalizedRole = input.actorRole.toUpperCase();
+
+  if (normalizedRole === "BOSS") {
+    return input.actorUserId ?? (await getPrimaryBossUserId());
+  }
+
+  if (normalizedRole === "SECRETARY") {
+    return await getPrimaryBossUserId();
+  }
+
+  return input.actorUserId ?? null;
+}
+
+function buildEventCreatedByLabel(input: {
+  source: "line_command" | "line_quick_action";
+  actorRole: string;
+  actorDisplayName?: string | null;
+}): string {
+  const display = input.actorDisplayName?.trim();
+  const base = `${input.source}:${input.actorRole.toUpperCase()}`;
+  return display ? `${base}:${display}` : base;
+}
 
 async function getEventsBetween(start: Date, end: Date) {
   const { data, error } = await supabaseAdmin
@@ -2462,6 +2508,7 @@ async function createCalendarEventFromCommand(input: {
   note?: string | null;
   taskDetails?: string | null;
   createdBy: string;
+  ownerUserId?: string | null;
 }) {
   const startDate = parseDateTimeInput(input.startAt);
   const endDate = parseDateTimeInput(input.endAt);
@@ -2477,6 +2524,7 @@ async function createCalendarEventFromCommand(input: {
     end_at: endDate.toISOString(),
     location_type: input.locationType ?? "INTERNAL",
     location_display_name: input.locationDisplayName ?? null,
+    owner_user_id: input.ownerUserId ?? null,
     created_by: input.createdBy
   };
 
@@ -3094,13 +3142,26 @@ async function tryHandleCommand(input: {
     if (!canManageCalendar(input.user.role)) {
       return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์เพิ่มกิจกรรมในปฏิทินกลางครับ";
     }
+    const ownerUserId = await resolveDefaultEventOwnerUserId({
+      actorUserId: input.user.id,
+      actorRole: input.user.role
+    });
     return createCalendarEventFromCommand({
       title: addMatch[1].trim(),
       startAt: addMatch[2].trim(),
       endAt: addMatch[3].trim(),
       locationType: addMatch[4]?.trim() ?? "INTERNAL",
       locationDisplayName: addMatch[5]?.trim() ?? null,
-      createdBy: "line_command"
+      ownerUserId,
+      createdBy: buildEventCreatedByLabel({
+        source: "line_command",
+        actorRole: input.user.role,
+        actorDisplayName:
+          input.user.nickname ??
+          input.user.line_display_name ??
+          input.user.username ??
+          null
+      })
     });
   }
 
@@ -3112,6 +3173,10 @@ async function tryHandleCommand(input: {
 
     try {
       const quickEvent = JSON.parse(quickEventMatch[1]) as QuickEventPayload;
+      const ownerUserId = await resolveDefaultEventOwnerUserId({
+        actorUserId: input.user.id,
+        actorRole: input.user.role
+      });
 
       return createCalendarEventFromCommand({
         title: quickEvent.title,
@@ -3123,7 +3188,16 @@ async function tryHandleCommand(input: {
         dressCode: quickEvent.dressCode ?? null,
         note: quickEvent.note ?? null,
         taskDetails: quickEvent.taskDetails ?? null,
-        createdBy: "line_quick_action"
+        ownerUserId,
+        createdBy: buildEventCreatedByLabel({
+          source: "line_quick_action",
+          actorRole: input.user.role,
+          actorDisplayName:
+            input.user.nickname ??
+            input.user.line_display_name ??
+            input.user.username ??
+            null
+        })
       });
     } catch {
       return "⚠️ ระบบแปลงคำสั่งตารางด่วนไม่สำเร็จครับ ลองใช้รูปแบบใหม่อีกครั้ง";

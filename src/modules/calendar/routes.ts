@@ -22,6 +22,59 @@ const updateEventSchema = eventSchema.partial();
 
 export const calendarRouter = Router();
 
+async function getPrimaryBossUserId(): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select("id")
+    .eq("role", "BOSS")
+    .eq("is_active", true)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.id ?? null;
+}
+
+async function resolveDefaultEventOwnerUserId(input: {
+  actorUserId: string | null;
+  actorRole: string | null | undefined;
+  requestedOwnerUserId?: string | null;
+}): Promise<string | null> {
+  if (input.requestedOwnerUserId !== undefined) {
+    return input.requestedOwnerUserId;
+  }
+
+  const normalizedRole = input.actorRole?.toUpperCase() ?? "GUEST";
+
+  if (normalizedRole === "BOSS") {
+    return input.actorUserId ?? (await getPrimaryBossUserId());
+  }
+
+  if (normalizedRole === "SECRETARY") {
+    return await getPrimaryBossUserId();
+  }
+
+  return input.actorUserId ?? null;
+}
+
+function buildEventCreatedByLabel(input: {
+  actorRole: string | null | undefined;
+  actorUsername: string | null | undefined;
+  requestedCreatedBy?: string;
+}): string {
+  if (input.requestedCreatedBy && input.requestedCreatedBy !== "api") {
+    return input.requestedCreatedBy;
+  }
+
+  const normalizedRole = input.actorRole?.toUpperCase() ?? "GUEST";
+  const actorLabel = input.actorUsername ?? "unknown";
+  return `api:${normalizedRole}:${actorLabel}`;
+}
+
 calendarRouter.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -53,6 +106,16 @@ calendarRouter.post(
   "/",
   asyncHandler(async (req, res) => {
     const body = eventSchema.parse(req.body);
+    const ownerUserId = await resolveDefaultEventOwnerUserId({
+      actorUserId: req.authUser?.sub ?? null,
+      actorRole: req.authUser?.role,
+      requestedOwnerUserId: body.ownerUserId
+    });
+    const createdBy = buildEventCreatedByLabel({
+      actorRole: req.authUser?.role,
+      actorUsername: req.authUser?.username,
+      requestedCreatedBy: body.createdBy
+    });
     const insertPayload: Record<string, unknown> = {
       title: body.title,
       description: body.description ?? null,
@@ -61,8 +124,8 @@ calendarRouter.post(
       is_all_day: body.isAllDay ?? false,
       location_type: body.locationType,
       location_display_name: body.locationDisplayName ?? null,
-      owner_user_id: body.ownerUserId ?? null,
-      created_by: body.createdBy
+      owner_user_id: ownerUserId,
+      created_by: createdBy
     };
 
     if (body.dressCode !== undefined && body.dressCode !== null) {
