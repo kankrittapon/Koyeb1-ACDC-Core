@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto";
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { promisify } from "util";
 import { Readable } from "stream";
 import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
@@ -60,6 +62,8 @@ type UploadedFileExtraction = {
   extractionStatus: "pending" | "completed" | "unsupported" | "failed";
   extractionError: string | null;
 };
+
+const execFileAsync = promisify(execFile);
 
 function mapRichUploadedFile(row: Record<string, unknown>): UploadedFileRecord {
   return {
@@ -125,6 +129,18 @@ function canExtractTextPreview(fileName: string, mimeType: string): boolean {
   }
 
   return [".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".xml", ".yml", ".yaml"].includes(ext);
+}
+
+function canExtractStructuredDocumentPreview(fileName: string, mimeType: string): boolean {
+  const normalizedMime = mimeType.toLowerCase();
+  const ext = path.extname(fileName).toLowerCase();
+
+  return (
+    normalizedMime.includes("pdf") ||
+    normalizedMime.includes("wordprocessingml.document") ||
+    ext === ".pdf" ||
+    ext === ".docx"
+  );
 }
 
 function extractPreviewFromBuffer(input: {
@@ -224,6 +240,36 @@ async function persistExtractionToDatabase(id: string, extraction: UploadedFileE
 
   if (update.error && update.error.code !== "PGRST204" && update.error.code !== "42703") {
     throw update.error;
+  }
+}
+
+async function extractStructuredDocumentPreview(input: {
+  filePath: string;
+}): Promise<UploadedFileExtraction> {
+  try {
+    const scriptPath = path.join(process.cwd(), "src", "scripts", "extract_file_preview.py");
+    const { stdout } = await execFileAsync("python3", [scriptPath, input.filePath], {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024
+    });
+
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    return {
+      previewText: (parsed.preview_text as string | null | undefined) ?? null,
+      summaryShort: (parsed.summary_short as string | null | undefined) ?? null,
+      pageCount: (parsed.page_count as number | null | undefined) ?? null,
+      extractionStatus:
+        ((parsed.extraction_status as UploadedFileExtraction["extractionStatus"] | undefined) ?? "completed"),
+      extractionError: (parsed.extraction_error as string | null | undefined) ?? null
+    };
+  } catch (error) {
+    return {
+      previewText: null,
+      summaryShort: null,
+      pageCount: null,
+      extractionStatus: "failed",
+      extractionError: error instanceof Error ? error.message.slice(0, 500) : "structured preview extraction failed"
+    };
   }
 }
 
@@ -409,11 +455,15 @@ export async function extractUploadedFilePreview(input: {
   buffer: Buffer;
   localDiskPath: string;
 }): Promise<UploadedFileExtraction> {
-  const extraction = extractPreviewFromBuffer({
-    fileName: input.fileName,
-    mimeType: input.mimeType,
-    buffer: input.buffer
-  });
+  const extraction = canExtractStructuredDocumentPreview(input.fileName, input.mimeType)
+    ? await extractStructuredDocumentPreview({
+        filePath: input.localDiskPath
+      })
+    : extractPreviewFromBuffer({
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        buffer: input.buffer
+      });
 
   await writeExtractionSidecar(input.localDiskPath, extraction);
 
