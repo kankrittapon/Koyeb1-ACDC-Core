@@ -54,6 +54,7 @@ const acknowledgementRequesterRoles = new Set(["BOSS"]);
 const acknowledgementTargetRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
 const secretaryRoles = new Set(["SECRETARY"]);
 const fileReviewSubmitterRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
+const aiEnabledRoles = new Set(["BOSS", "SECRETARY", "ADMIN", "USER"]);
 const weekdayMap = new Map<string, number>([
   ["อาทิตย์", 0],
   ["วันอาทิตย์", 0],
@@ -167,6 +168,13 @@ type FileReviewRequestInput = {
   driveUrl?: string | null;
 };
 
+type RolePersonaRow = {
+  role: string;
+  greeting?: string | null;
+  tone?: string | null;
+  behavior?: string | null;
+};
+
 function getLineClient(): Client {
   if (!lineClient) {
     throw new Error("LINE client is not configured");
@@ -232,6 +240,10 @@ function canRequestAcknowledgement(role: string): boolean {
 
 function canReceiveAcknowledgement(role: string): boolean {
   return acknowledgementTargetRoles.has(role.toUpperCase());
+}
+
+function canUseAIMode(role: string): boolean {
+  return aiEnabledRoles.has(role.toUpperCase());
 }
 
 function isSecretaryRole(role: string): boolean {
@@ -1251,6 +1263,61 @@ function resolveUserDisplayName(user: {
   return user.nickname ?? user.line_display_name ?? user.username ?? user.role ?? "เจ้าหน้าที่";
 }
 
+function getAIDisabledMessage(role: string): string {
+  const normalizedRole = role.toUpperCase();
+
+  if (normalizedRole === "GUEST") {
+    return "⚠️ บัญชีนี้ยังไม่ได้รับสิทธิ์ใช้งาน AI กรุณาให้แอดมินกำหนดสิทธิ์ก่อนครับ";
+  }
+
+  if (acknowledgementTargetRoles.has(normalizedRole)) {
+    return "⚠️ บทบาทนี้ใช้ได้เฉพาะ Quick Action สำหรับรับคำสั่ง รับไฟล์ ตอบรับ และส่งงานกลับเข้าระบบ ยังไม่เปิด AI Mode ครับ";
+  }
+
+  return "⚠️ บทบาทนี้ยังไม่ได้รับสิทธิ์ใช้งาน AI Mode ครับ";
+}
+
+function getRolePolicyHints(role: string): string[] {
+  const normalizedRole = role.toUpperCase();
+
+  if (normalizedRole === "BOSS") {
+    return [
+      "Respond like an executive aide supporting a battalion commander.",
+      "Prefer concise, decision-ready summaries with direct next actions.",
+      "When summarizing, highlight operational risk, blockers, and what needs approval."
+    ];
+  }
+
+  if (normalizedRole === "SECRETARY") {
+    return [
+      "Respond like a highly reliable military secretary and coordinator.",
+      "Emphasize scheduling accuracy, action tracking, and communication clarity.",
+      "When drafting messages, keep them professional, structured, and ready to send."
+    ];
+  }
+
+  if (normalizedRole === "ADMIN") {
+    return [
+      "Respond like a systems administrator for internal operations.",
+      "Prioritize operational correctness, traceability, and configuration awareness.",
+      "Be direct, factual, and explicit about system limits or risks."
+    ];
+  }
+
+  if (normalizedRole === "USER") {
+    return [
+      "Respond as a helpful internal operations assistant.",
+      "Keep explanations practical and easy to act on.",
+      "Do not imply authority beyond the caller's own scope."
+    ];
+  }
+
+  return [
+    "Respond conservatively and respect role boundaries.",
+    "Avoid implying permissions or authority the caller does not have."
+  ];
+}
+
 function buildAcknowledgementFlexMessage(input: AcknowledgementRequestInput) {
   const actions = [
     {
@@ -1686,15 +1753,55 @@ function buildRoleContext(user: {
   role: string;
   nickname?: string | null;
   line_display_name?: string | null;
+}, extras?: {
+  botInstruction?: string | null;
+  persona?: RolePersonaRow | null;
 }) {
-  return [
+  const lines = [
     "You are the ACDC Core assistant for internal staff operations.",
     `Current role: ${user.role}`,
     `Nickname: ${user.nickname ?? "-"}`,
     `LINE display name: ${user.line_display_name ?? "-"}`,
     "Respect role boundaries. Do not claim a calendar action has been completed unless the Koyeb1 backend actually performed it.",
     "If the request is informational, answer directly and clearly in Thai."
-  ].join("\n");
+  ];
+
+  if (extras?.botInstruction?.trim()) {
+    lines.push(`System instruction: ${extras.botInstruction.trim()}`);
+  }
+
+  if (extras?.persona) {
+    if (extras.persona.greeting?.trim()) {
+      lines.push(`Preferred greeting: ${extras.persona.greeting.trim()}`);
+    }
+    if (extras.persona.tone?.trim()) {
+      lines.push(`Tone policy: ${extras.persona.tone.trim()}`);
+    }
+    if (extras.persona.behavior?.trim()) {
+      lines.push(`Behavior policy: ${extras.persona.behavior.trim()}`);
+    }
+  }
+
+  lines.push(...getRolePolicyHints(user.role));
+
+  return lines.join("\n");
+}
+
+async function getAIContextConfig(role: string) {
+  const normalizedRole = role.toUpperCase();
+  const [{ data: botConfig }, { data: persona }] = await Promise.all([
+    supabaseAdmin.from("bot_config").select("system_instruction, is_active").eq("id", "default").maybeSingle(),
+    supabaseAdmin
+      .from("role_personas")
+      .select("role, greeting, tone, behavior")
+      .eq("role", normalizedRole)
+      .maybeSingle()
+  ]);
+
+  return {
+    botInstruction: botConfig?.is_active === false ? null : botConfig?.system_instruction ?? null,
+    persona: (persona ?? null) as RolePersonaRow | null
+  };
 }
 
 async function findStaffUser(target: string) {
@@ -2738,6 +2845,16 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
   }
 
   if (isAIInvocation(trimmed)) {
+    if (!canUseAIMode(user.role)) {
+      const message = getAIDisabledMessage(user.role);
+      await logConversation(lineUserId, user.id, text, message);
+      await replyText(event.replyToken, message, {
+        title: "AI Mode",
+        accentColor: "#b45309"
+      });
+      return;
+    }
+
     const prompt = trimmed.replace(/^ai\s*/i, "").trim();
     enterAIMode(lineUserId);
 
@@ -2753,10 +2870,11 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
       return;
     }
 
+    const aiContextConfig = await getAIContextConfig(user.role);
     const result = await requestGatewayChat({
       prompt,
       policy: config.KOYEB0_DEFAULT_POLICY,
-      context: `${buildRoleContext(user)}\nYou are in explicit AI mode. Answer helpfully in Thai.`,
+      context: `${buildRoleContext(user, aiContextConfig)}\nYou are in explicit AI mode. Answer helpfully in Thai and keep the response aligned with the caller's role policy.`,
       metadata: {
         source: "line_ai_mode",
         lineUserId,
@@ -2775,11 +2893,23 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
   }
 
   if (aiModeActive) {
+    if (!canUseAIMode(user.role)) {
+      clearAIMode(lineUserId);
+      const message = getAIDisabledMessage(user.role);
+      await logConversation(lineUserId, user.id, text, message);
+      await replyText(event.replyToken, message, {
+        title: "AI Mode",
+        accentColor: "#b45309"
+      });
+      return;
+    }
+
     refreshAIMode(lineUserId);
+    const aiContextConfig = await getAIContextConfig(user.role);
     const result = await requestGatewayChat({
       prompt: trimmed,
       policy: config.KOYEB0_DEFAULT_POLICY,
-      context: `${buildRoleContext(user)}\nYou are in explicit AI mode. Answer helpfully in Thai.`,
+      context: `${buildRoleContext(user, aiContextConfig)}\nYou are in explicit AI mode. Answer helpfully in Thai and keep the response aligned with the caller's role policy.`,
       metadata: {
         source: "line_ai_mode",
         lineUserId,
