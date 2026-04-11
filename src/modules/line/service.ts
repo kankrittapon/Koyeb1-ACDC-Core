@@ -311,6 +311,170 @@ function requiresSecretaryReview(role: string): boolean {
   return fileReviewSubmitterRoles.has(role.toUpperCase());
 }
 
+function normalizeHelpRole(role: string): string {
+  const normalized = role.trim().toUpperCase();
+  if (normalized === "ADMIN") {
+    return "DEV";
+  }
+  return resolveRoleKeyword(role) ?? normalized;
+}
+
+function getRoleDisplayName(role: string): string {
+  switch (normalizeHelpRole(role)) {
+    case "DEV":
+      return "DEV";
+    case "BOSS":
+      return "BOSS / ผู้พัน";
+    case "SECRETARY":
+      return "SECRETARY / เลขา";
+    case "NYK":
+      return "NYK / นยก";
+    case "NKB":
+      return "NKB / นกบ";
+    case "NPK":
+      return "NPK / นกพ";
+    case "NNG":
+      return "NNG / นกง";
+    case "GUEST":
+      return "GUEST";
+    default:
+      return normalizeHelpRole(role);
+  }
+}
+
+function buildRoleMenuText(role: string): string {
+  const normalizedRole = normalizeHelpRole(role);
+
+  if (normalizedRole === "GUEST") {
+    return [
+      "สิทธิ์ของคุณ: GUEST",
+      "",
+      "ตอนนี้ยังไม่มีสิทธิ์ใช้งานระบบครับ",
+      "กรุณาให้ DEV กำหนด role ให้ก่อน"
+    ].join("\n");
+  }
+
+  const lines = [
+    `สิทธิ์ของคุณ: ${getRoleDisplayName(normalizedRole)}`,
+    "",
+    "คำสั่งที่ใช้ได้"
+  ];
+
+  lines.push("- /status");
+  lines.push("- /clear");
+  lines.push("- /help หรือ /commands หรือ /menu หรือ /สิทธิ์");
+
+  if (canManageCalendar(normalizedRole)) {
+    lines.push("- ตารางงานวันนี้ / ตารางพรุ่งนี้ / ตารางงานอังคารหน้า");
+  }
+
+  if (canRequestSummary(normalizedRole)) {
+    lines.push("- สรุปงานวันนี้ / สรุปงานสัปดาห์หน้า / สรุปงานเดือนนี้");
+    lines.push("- ขอการ์ดวันนี้");
+  }
+
+  if (canUseAIMode(normalizedRole)) {
+    lines.push("- AI ...");
+  }
+
+  if (canMessageStaff(normalizedRole)) {
+    lines.push("- ส่งข้อความให้... / ฝากข้อความให้...");
+  }
+
+  if (canSendFileForReview(normalizedRole)) {
+    lines.push("- ส่งไฟล์นี้ให้... [ข้อความ]");
+  }
+
+  if (canRequestAcknowledgement(normalizedRole)) {
+    lines.push("- เรียก นยก / นกบ / นกพ / นกง");
+  }
+
+  if (canManageFilePurge(normalizedRole)) {
+    lines.push("- /files status");
+    lines.push("- /files clear-meta");
+    lines.push("- /files clear-all");
+    lines.push("- /help role BOSS");
+    lines.push("- /help ai");
+    lines.push("- /help files");
+  }
+
+  lines.push("", "ข้อจำกัด");
+
+  switch (normalizedRole) {
+    case "DEV":
+      lines.push("- DEV ดูแลระบบและล้างไฟล์ทั้งชุดได้");
+      break;
+    case "BOSS":
+      lines.push("- เปลี่ยน role DEV ไม่ได้");
+      lines.push("- เปลี่ยนคนที่เป็น BOSS ไม่ได้");
+      break;
+    case "SECRETARY":
+      lines.push("- เปลี่ยน role BOSS / DEV / SECRETARY ไม่ได้");
+      break;
+    case "NYK":
+    case "NKB":
+    case "NPK":
+    case "NNG":
+      lines.push("- ใช้ AI ไม่ได้");
+      lines.push("- ใช้ได้เฉพาะ quick action และ workflow ที่ได้รับมอบหมาย");
+      break;
+    default:
+      lines.push("- ระบบจะจำกัดตามบทบาทที่ได้รับ");
+      break;
+  }
+
+  return lines.join("\n");
+}
+
+function buildAiHelpText(role: string): string {
+  const normalizedRole = normalizeHelpRole(role);
+  const lines = [
+    "คู่มือ AI Mode",
+    "",
+    "วิธีใช้",
+    "- พิมพ์ขึ้นต้นด้วย AI เช่น AI ช่วยร่างข้อความประสานงานให้เลขา",
+    "- พิมพ์ exit เพื่อออกจาก AI Mode",
+    "",
+    "ข้อควรรู้",
+    "- ตารางงานและสรุปงานบางแบบจะถูก route ไป Quick Action ก่อน",
+    "- AI จะไม่เดาฐานข้อมูลถ้ายังไม่มีข้อมูลที่ยืนยันได้"
+  ];
+
+  if (!canUseAIMode(normalizedRole)) {
+    lines.push("", "บทบาทนี้ยังไม่เปิด AI Mode ครับ");
+  }
+
+  return lines.join("\n");
+}
+
+function buildFilesHelpText(role: string): string {
+  const normalizedRole = normalizeHelpRole(role);
+  const lines = [
+    "คู่มือไฟล์",
+    "",
+    "คำสั่งหลัก",
+    "- ส่งไฟล์เข้ามาใน LINE เพื่อบันทึกลงระบบ",
+    "- ส่งไฟล์นี้ให้ [ชื่อ] [ข้อความ] เพื่อส่งต่อไฟล์พร้อมคำสั่งงาน",
+    "",
+    "AI-on-file",
+    "- AI ช่วยสรุปไฟล์ล่าสุด",
+    "- AI ช่วยบอกเนื้อหาเบื้องต้นของเอกสารล่าสุด"
+  ];
+
+  if (canManageFilePurge(normalizedRole)) {
+    lines.push("", "คำสั่งสำหรับ DEV");
+    lines.push("- /files status");
+    lines.push("- /files clear-meta");
+    lines.push("- /files clear-all");
+  }
+
+  lines.push("", "หมายเหตุ");
+  lines.push("- clear-meta จะลบ metadata และ sidecar OCR");
+  lines.push("- clear-all จะลบ metadata, local file, sidecar และพยายามลบไฟล์ใน Drive");
+
+  return lines.join("\n");
+}
+
 function parseDateInput(input: string, endOfDay = false): Date | null {
   const trimmed = input.trim();
   const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -3396,6 +3560,28 @@ async function tryHandleCommand(input: {
   lineUserId: string;
 }): Promise<string | null> {
   const trimmed = normalizeTextCommand(input.text);
+
+  if (trimmed === "/help" || trimmed === "/commands" || trimmed === "/menu" || trimmed === "/สิทธิ์") {
+    return buildRoleMenuText(input.user.role);
+  }
+
+  const helpRoleMatch = trimmed.match(/^\/help role\s+(.+)$/i);
+  if (helpRoleMatch) {
+    if (!canManageFilePurge(input.user.role)) {
+      return "⚠️ คำสั่งดูสิทธิ์ของ role อื่นเปิดให้เฉพาะ DEV ครับ";
+    }
+
+    const requestedRole = normalizeHelpRole(helpRoleMatch[1].trim());
+    return buildRoleMenuText(requestedRole);
+  }
+
+  if (trimmed === "/help ai") {
+    return buildAiHelpText(input.user.role);
+  }
+
+  if (trimmed === "/help files") {
+    return buildFilesHelpText(input.user.role);
+  }
 
   if (trimmed === "/clear") {
     clearTransientUserState(input.lineUserId);
