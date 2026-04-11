@@ -1261,7 +1261,12 @@ async function logConversation(lineUserId: string, userId: string | null, messag
 }
 
 function getDriveFolderId(role: string, mimeType: string): string | undefined {
-  const normalizedRole = role.toUpperCase() === "DEV" ? "ADMIN" : role.toUpperCase();
+  const normalizedRole =
+    role.toUpperCase() === "DEV"
+      ? "ADMIN"
+      : ["NYK", "NKB", "NPK", "NNG"].includes(role.toUpperCase())
+        ? "USER"
+        : role.toUpperCase();
 
   const roleRootMap: Record<string, string | undefined> = {
     BOSS: config.GOOGLE_DRIVE_BOSS_ROOT_FOLDER || config.GDRIVE_BOSS_ROOT,
