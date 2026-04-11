@@ -5,6 +5,19 @@ import { supabaseAdmin } from "../../lib/supabase";
 import { requestGatewayChat } from "../ai-gateway/client";
 import { deleteFileFromDrive, uploadFileToDrive } from "../drive/service";
 import {
+  canManageCalendar,
+  canManageFilePurge,
+  canMessageStaff,
+  canReceiveAcknowledgement,
+  canRequestAcknowledgement,
+  canRequestSummary,
+  canSendFileForReview,
+  canUseAIMode,
+  isSecretaryRole,
+  normalizeCapabilityRole,
+  requiresSecretaryReview
+} from "../policy/role-capabilities";
+import {
   bufferToReadable,
   createUploadedFileRecord,
   deleteUploadedFileRecord,
@@ -53,11 +66,6 @@ const researchKeywords = [
   "ค้นคว้า"
 ];
 
-const calendarManagerRoles = new Set(["BOSS", "DEV", "ADMIN", "SECRETARY"]);
-const summaryRoles = new Set(["BOSS", "DEV", "ADMIN", "SECRETARY"]);
-const staffMessagingRoles = new Set(["BOSS", "DEV", "ADMIN", "SECRETARY"]);
-const acknowledgementRequesterRoles = new Set(["BOSS"]);
-const acknowledgementTargetRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
 const roleKeywordMap = new Map<string, string>([
   ["นยก", "NYK"],
   ["นายทหารยุทธการ", "NYK"],
@@ -84,9 +92,6 @@ const roleKeywordMap = new Map<string, string>([
   ["developer", "DEV"],
   ["ผู้พัฒนา", "DEV"]
 ]);
-const secretaryRoles = new Set(["SECRETARY"]);
-const fileReviewSubmitterRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
-const aiEnabledRoles = new Set(["BOSS", "SECRETARY", "DEV", "ADMIN", "USER"]);
 const weekdayMap = new Map<string, number>([
   ["อาทิตย์", 0],
   ["วันอาทิตย์", 0],
@@ -269,54 +274,8 @@ function clearTransientUserState(lineUserId: string): void {
   pendingRejectReviewState.delete(lineUserId);
 }
 
-function canManageCalendar(role: string): boolean {
-  return calendarManagerRoles.has(role.toUpperCase());
-}
-
-function canRequestSummary(role: string): boolean {
-  return summaryRoles.has(role.toUpperCase());
-}
-
-function canMessageStaff(role: string): boolean {
-  return staffMessagingRoles.has(role.toUpperCase());
-}
-
-function canManageFilePurge(role: string): boolean {
-  const normalized = role.toUpperCase();
-  return normalized === "DEV" || normalized === "ADMIN";
-}
-
-function canSendFileForReview(role: string): boolean {
-  const normalizedRole = role.toUpperCase();
-  return staffMessagingRoles.has(normalizedRole) || fileReviewSubmitterRoles.has(normalizedRole);
-}
-
-function canRequestAcknowledgement(role: string): boolean {
-  return acknowledgementRequesterRoles.has(role.toUpperCase());
-}
-
-function canReceiveAcknowledgement(role: string): boolean {
-  return acknowledgementTargetRoles.has(role.toUpperCase());
-}
-
-function canUseAIMode(role: string): boolean {
-  return aiEnabledRoles.has(role.toUpperCase());
-}
-
-function isSecretaryRole(role: string): boolean {
-  return secretaryRoles.has(role.toUpperCase());
-}
-
-function requiresSecretaryReview(role: string): boolean {
-  return fileReviewSubmitterRoles.has(role.toUpperCase());
-}
-
 function normalizeHelpRole(role: string): string {
-  const normalized = role.trim().toUpperCase();
-  if (normalized === "ADMIN") {
-    return "DEV";
-  }
-  return resolveRoleKeyword(role) ?? normalized;
+  return resolveRoleKeyword(role) ?? String(normalizeCapabilityRole(role));
 }
 
 function getRoleDisplayName(role: string): string {
@@ -1649,13 +1608,13 @@ function resolveUserDisplayName(user: {
 }
 
 function getAIDisabledMessage(role: string): string {
-  const normalizedRole = role.toUpperCase();
+  const normalizedRole = String(normalizeCapabilityRole(role));
 
   if (normalizedRole === "GUEST") {
     return "⚠️ บัญชีนี้ยังไม่ได้รับสิทธิ์ใช้งาน AI กรุณาให้แอดมินกำหนดสิทธิ์ก่อนครับ";
   }
 
-  if (acknowledgementTargetRoles.has(normalizedRole)) {
+  if (canReceiveAcknowledgement(normalizedRole)) {
     return "⚠️ บทบาทนี้ใช้ได้เฉพาะ Quick Action สำหรับรับคำสั่ง รับไฟล์ ตอบรับ และส่งงานกลับเข้าระบบ ยังไม่เปิด AI Mode ครับ";
   }
 
