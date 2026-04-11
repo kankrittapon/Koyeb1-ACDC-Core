@@ -76,3 +76,10 @@ export async function uploadFileToDrive(input: {
     webViewLink: response.data.webViewLink ?? null
   };
 }
+
+export async function deleteFileFromDrive(fileId: string): Promise<void> {
+  const drive = await getDriveClient();
+  await drive.files.delete({
+    fileId
+  });
+}
