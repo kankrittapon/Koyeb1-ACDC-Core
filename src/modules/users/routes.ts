@@ -21,6 +21,10 @@ const updateUserSchema = z.object({
   isActive: z.boolean().optional()
 });
 
+const createAliasSchema = z.object({
+  alias: z.string().min(1).max(100)
+});
+
 export const usersRouter = Router();
 
 usersRouter.get(
@@ -29,7 +33,7 @@ usersRouter.get(
     const { data, error } = await supabaseAdmin
       .from("users")
       .select(
-        "id, username, role, line_user_id, line_display_name, nickname, is_active, created_at"
+        "id, username, role, line_user_id, line_display_name, nickname, is_active, created_at, user_aliases(id, alias, created_at)"
       )
       .order("created_at", { ascending: false });
 
@@ -58,7 +62,7 @@ usersRouter.post(
         line_display_name: body.lineDisplayName ?? null
       })
       .select(
-        "id, username, role, line_user_id, line_display_name, nickname, is_active, created_at"
+        "id, username, role, line_user_id, line_display_name, nickname, is_active, created_at, user_aliases(id, alias, created_at)"
       )
       .single();
 
@@ -92,7 +96,7 @@ usersRouter.patch(
       .update(updatePayload)
       .eq("id", req.params.id)
       .select(
-        "id, username, role, line_user_id, line_display_name, nickname, is_active, created_at"
+        "id, username, role, line_user_id, line_display_name, nickname, is_active, created_at, user_aliases(id, alias, created_at)"
       )
       .single();
 
@@ -101,5 +105,45 @@ usersRouter.patch(
     }
 
     return res.json(data);
+  })
+);
+
+usersRouter.post(
+  "/:id/aliases",
+  asyncHandler(async (req, res) => {
+    const body = createAliasSchema.parse(req.body);
+    const alias = body.alias.trim();
+
+    const { data, error } = await supabaseAdmin
+      .from("user_aliases")
+      .insert({
+        user_id: req.params.id,
+        alias
+      })
+      .select("id, alias, created_at")
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return res.status(201).json(data);
+  })
+);
+
+usersRouter.delete(
+  "/:id/aliases/:aliasId",
+  asyncHandler(async (req, res) => {
+    const { error } = await supabaseAdmin
+      .from("user_aliases")
+      .delete()
+      .eq("id", req.params.aliasId)
+      .eq("user_id", req.params.id);
+
+    if (error) {
+      throw error;
+    }
+
+    return res.status(204).send();
   })
 );
