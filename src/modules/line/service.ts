@@ -47,9 +47,9 @@ const researchKeywords = [
   "ค้นคว้า"
 ];
 
-const calendarManagerRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
-const summaryRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
-const staffMessagingRoles = new Set(["BOSS", "ADMIN", "SECRETARY"]);
+const calendarManagerRoles = new Set(["BOSS", "DEV", "ADMIN", "SECRETARY"]);
+const summaryRoles = new Set(["BOSS", "DEV", "ADMIN", "SECRETARY"]);
+const staffMessagingRoles = new Set(["BOSS", "DEV", "ADMIN", "SECRETARY"]);
 const acknowledgementRequesterRoles = new Set(["BOSS"]);
 const acknowledgementTargetRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
 const roleKeywordMap = new Map<string, string>([
@@ -73,11 +73,14 @@ const roleKeywordMap = new Map<string, string>([
   ["boss", "BOSS"],
   ["ผบ.พัน", "BOSS"],
   ["ผบพัน", "BOSS"],
-  ["ผบ พัน", "BOSS"]
+  ["ผบ พัน", "BOSS"],
+  ["dev", "DEV"],
+  ["developer", "DEV"],
+  ["ผู้พัฒนา", "DEV"]
 ]);
 const secretaryRoles = new Set(["SECRETARY"]);
 const fileReviewSubmitterRoles = new Set(["NYK", "NKB", "NPK", "NNG"]);
-const aiEnabledRoles = new Set(["BOSS", "SECRETARY", "ADMIN", "USER"]);
+const aiEnabledRoles = new Set(["BOSS", "SECRETARY", "DEV", "ADMIN", "USER"]);
 const weekdayMap = new Map<string, number>([
   ["อาทิตย์", 0],
   ["วันอาทิตย์", 0],
@@ -1210,7 +1213,7 @@ async function logConversation(lineUserId: string, userId: string | null, messag
 }
 
 function getDriveFolderId(role: string, mimeType: string): string | undefined {
-  const normalizedRole = role.toUpperCase();
+  const normalizedRole = role.toUpperCase() === "DEV" ? "ADMIN" : role.toUpperCase();
 
   const roleRootMap: Record<string, string | undefined> = {
     BOSS: config.GOOGLE_DRIVE_BOSS_ROOT_FOLDER || config.GDRIVE_BOSS_ROOT,
@@ -1437,9 +1440,9 @@ function getRolePolicyHints(role: string): string[] {
     ];
   }
 
-  if (normalizedRole === "ADMIN") {
+  if (normalizedRole === "ADMIN" || normalizedRole === "DEV") {
     return [
-      "Respond like a systems administrator for internal operations.",
+      "Respond like a developer and systems administrator for internal operations.",
       "Prioritize operational correctness, traceability, and configuration awareness.",
       "Be direct, factual, and explicit about system limits or risks."
     ];

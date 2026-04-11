@@ -138,19 +138,19 @@ if (config.ENABLE_LINE_WEBHOOK) {
 }
 app.use(express.json({ limit: "2mb" }));
 app.use("/api/auth", authRouter);
-app.use("/api/users", requireAccess, requireRole(["ADMIN"]), usersRouter);
+app.use("/api/users", requireAccess, requireRole(["DEV", "ADMIN", "SECRETARY", "BOSS"]), usersRouter);
 app.use(
   "/api/events",
   requireAccess,
-  requireRole(["ADMIN", "SECRETARY", "BOSS"]),
+  requireRole(["DEV", "ADMIN", "SECRETARY", "BOSS"]),
   calendarRouter
 );
-app.use("/api/prompts", requireAccess, requireRole(["ADMIN"]), promptsRouter);
-app.use("/api/logs", requireAccess, requireRole(["ADMIN"]), logsRouter);
+app.use("/api/prompts", requireAccess, requireRole(["DEV", "ADMIN"]), promptsRouter);
+app.use("/api/logs", requireAccess, requireRole(["DEV", "ADMIN"]), logsRouter);
 app.use(
   "/api/jobs",
   requireAccess,
-  requireRole(["ADMIN", "SECRETARY", "BOSS"]),
+  requireRole(["DEV", "ADMIN", "SECRETARY", "BOSS"]),
   schedulerRouter
 );
 

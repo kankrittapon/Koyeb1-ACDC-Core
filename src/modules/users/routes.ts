@@ -4,6 +4,67 @@ import { z } from "zod";
 import { asyncHandler } from "../../lib/http";
 import { supabaseAdmin } from "../../lib/supabase";
 
+const supportedRoles = ["DEV", "BOSS", "SECRETARY", "NYK", "NKB", "NPK", "NNG", "USER", "GUEST"] as const;
+
+function normalizeRoleInput(role: string): string {
+  const normalized = role.trim().toUpperCase();
+  return normalized === "ADMIN" ? "DEV" : normalized;
+}
+
+function parseSupportedRole(role: string): string | null {
+  const normalized = normalizeRoleInput(role);
+  if (!(supportedRoles as readonly string[]).includes(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function isDevRole(role: string | null | undefined): boolean {
+  const normalized = role?.trim().toUpperCase();
+  return normalized === "DEV" || normalized === "ADMIN";
+}
+
+function canManageUsers(role: string | null | undefined): boolean {
+  const normalized = role?.trim().toUpperCase();
+  return normalized === "BOSS" || normalized === "SECRETARY" || isDevRole(role);
+}
+
+function canCreateOrAssignRole(input: {
+  actorRole: string;
+  targetCurrentRole?: string | null;
+  targetNextRole: string;
+}): boolean {
+  const actor = normalizeRoleInput(input.actorRole);
+  const current = input.targetCurrentRole ? normalizeRoleInput(input.targetCurrentRole) : null;
+  const next = normalizeRoleInput(input.targetNextRole);
+
+  if (actor === "DEV") {
+    return true;
+  }
+
+  if (actor === "BOSS") {
+    if (current === "DEV" || current === "BOSS") {
+      return false;
+    }
+    if (next === "DEV" || next === "BOSS") {
+      return false;
+    }
+    return true;
+  }
+
+  if (actor === "SECRETARY") {
+    if (current === "DEV" || current === "BOSS" || current === "SECRETARY") {
+      return false;
+    }
+    if (next === "DEV" || next === "BOSS" || next === "SECRETARY") {
+      return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
 const createUserSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(6),
@@ -29,7 +90,11 @@ export const usersRouter = Router();
 
 usersRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    if (!canManageUsers(req.authUser?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const { data, error } = await supabaseAdmin
       .from("users")
       .select(
@@ -48,7 +113,20 @@ usersRouter.get(
 usersRouter.post(
   "/",
   asyncHandler(async (req, res) => {
+    if (!canManageUsers(req.authUser?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const body = createUserSchema.parse(req.body);
+    const role = parseSupportedRole(body.role);
+    if (!role) {
+      return res.status(400).json({ error: `Unsupported role: ${body.role}` });
+    }
+
+    if (!canCreateOrAssignRole({ actorRole: req.authUser?.role ?? "GUEST", targetNextRole: role })) {
+      return res.status(403).json({ error: "Forbidden to assign this role" });
+    }
+
     const passwordHash = await bcrypt.hash(body.password, 10);
 
     const { data, error } = await supabaseAdmin
@@ -56,7 +134,7 @@ usersRouter.post(
       .insert({
         username: body.username,
         password_hash: passwordHash,
-        role: body.role,
+        role,
         nickname: body.nickname ?? null,
         line_user_id: body.lineUserId ?? null,
         line_display_name: body.lineDisplayName ?? null
@@ -77,13 +155,47 @@ usersRouter.post(
 usersRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
+    if (!canManageUsers(req.authUser?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const body = updateUserSchema.parse(req.body);
+    const actorRole = req.authUser?.role ?? "GUEST";
+
+    const { data: existingUser, error: existingUserError } = await supabaseAdmin
+      .from("users")
+      .select("id, role")
+      .eq("id", req.params.id)
+      .maybeSingle();
+
+    if (existingUserError) {
+      throw existingUserError;
+    }
+
+    if (!existingUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
     const updatePayload: Record<string, unknown> = {
       updated_at: new Date().toISOString()
     };
 
-    if (body.role !== undefined) updatePayload.role = body.role;
+    if (body.role !== undefined) {
+      const nextRole = parseSupportedRole(body.role);
+      if (!nextRole) {
+        return res.status(400).json({ error: `Unsupported role: ${body.role}` });
+      }
+      if (
+        !canCreateOrAssignRole({
+          actorRole,
+          targetCurrentRole: existingUser.role,
+          targetNextRole: nextRole
+        })
+      ) {
+        return res.status(403).json({ error: "Forbidden to change this role" });
+      }
+      updatePayload.role = nextRole;
+    }
     if (body.nickname !== undefined) updatePayload.nickname = body.nickname;
     if (body.lineUserId !== undefined) updatePayload.line_user_id = body.lineUserId;
     if (body.lineDisplayName !== undefined) {
@@ -111,6 +223,10 @@ usersRouter.patch(
 usersRouter.post(
   "/:id/aliases",
   asyncHandler(async (req, res) => {
+    if (!canManageUsers(req.authUser?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const body = createAliasSchema.parse(req.body);
     const alias = body.alias.trim();
 
@@ -134,6 +250,10 @@ usersRouter.post(
 usersRouter.delete(
   "/:id/aliases/:aliasId",
   asyncHandler(async (req, res) => {
+    if (!canManageUsers(req.authUser?.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const { error } = await supabaseAdmin
       .from("user_aliases")
       .delete()
