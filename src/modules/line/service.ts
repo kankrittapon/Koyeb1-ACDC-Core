@@ -481,6 +481,16 @@ function resolveDayExpression(dayInput: string, now = new Date()): BangkokDatePa
   const baseParts = getBangkokDateParts(now);
   const base = toBangkokDateObject(baseParts);
 
+  if (trimmed === "เมื่อวาน") {
+    const date = new Date(base);
+    date.setUTCDate(date.getUTCDate() - 1);
+    return {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate()
+    };
+  }
+
   if (trimmed === "วันนี้") {
     return baseParts;
   }
@@ -706,6 +716,22 @@ type DateRangePreset = {
   title: string;
 };
 
+function getRangeForDayExpression(dayInput: string, titlePrefix: string): DateRangePreset | null {
+  const parts = resolveDayExpression(dayInput);
+  if (!parts) {
+    return null;
+  }
+
+  const start = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, -7, 0, 0, 0));
+  const end = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 16, 59, 59, 999));
+  return {
+    start,
+    end,
+    label: `ประจำวัน ${formatThaiDate(start)}`,
+    title: `${titlePrefix}${dayInput.trim()}`
+  };
+}
+
 function getRangeFromPreset(
   preset: "today" | "week" | "month" | "tomorrow" | "dayaftertomorrow" | "nextweek" | "nextmonth"
 ): DateRangePreset {
@@ -870,6 +896,12 @@ function normalizeCompactThai(text: string): string {
   return text.trim().replace(/\s+/g, "");
 }
 
+function normalizeCommonThaiTypos(text: string): string {
+  return text
+    .replace(/ตารางาน/g, "ตารางงาน")
+    .replace(/ตารางงาน/g, "ตารางงาน");
+}
+
 function stripThaiPoliteness(text: string): string {
   return text
     .trim()
@@ -925,15 +957,33 @@ function resolveRoleKeyword(target: string): string | null {
 }
 
 function normalizeTextCommand(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = normalizeCommonThaiTypos(text.trim());
   const compact = normalizeCompactThai(trimmed);
 
-  if (/^(วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?)$/i.test(trimmed)) {
+  if (/^(เมื่อวาน|วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?)$/i.test(trimmed)) {
     return `/clarify day | ${trimmed}`;
+  }
+
+  const genericScheduleDayMatch = trimmed.match(
+    /^(?:ขอ|ช่วย)?(?:ดู)?(?:ตาราง|ตารางงาน|งาน)\s*((?:เมื่อวาน|วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?))$/i
+  );
+  if (genericScheduleDayMatch && resolveDayExpression(genericScheduleDayMatch[1].trim())) {
+    return `/event day | ${genericScheduleDayMatch[1].trim()}`;
+  }
+
+  const genericSummaryDayMatch = trimmed.match(
+    /^(?:ขอ|ช่วย)?(?:สรุปงาน|รายงาน)\s*((?:เมื่อวาน|วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?))$/i
+  );
+  if (genericSummaryDayMatch && resolveDayExpression(genericSummaryDayMatch[1].trim())) {
+    return `/summary day | ${genericSummaryDayMatch[1].trim()}`;
   }
 
   if (matchesScheduleIntent(trimmed, "วันนี้")) {
     return "/event today";
+  }
+
+  if (matchesScheduleIntent(trimmed, "เมื่อวาน")) {
+    return "/event day | เมื่อวาน";
   }
 
   if (matchesScheduleIntent(trimmed, "พรุ่งนี้")) {
@@ -962,6 +1012,10 @@ function normalizeTextCommand(text: string): string {
 
   if (matchesSummaryIntent(trimmed, "วันนี้")) {
     return "/summary today";
+  }
+
+  if (matchesSummaryIntent(trimmed, "เมื่อวาน")) {
+    return "/summary day | เมื่อวาน";
   }
 
   if (matchesSummaryIntent(trimmed, "พรุ่งนี้")) {
@@ -2584,6 +2638,15 @@ async function tryHandleCommand(input: {
     return getScheduleTextForRange(range.start, range.end, range.title, range.label);
   }
 
+  const eventDayMatch = trimmed.match(/^\/event day\s*\|\s*(.+)$/i);
+  if (eventDayMatch) {
+    const range = getRangeForDayExpression(eventDayMatch[1].trim(), "ตารางงาน");
+    if (!range) {
+      return "⚠️ ระบบยังตีความวันดังกล่าวไม่สำเร็จครับ ลองใช้รูปแบบเช่น อังคารหน้า หรือ 2026-04-14";
+    }
+    return getScheduleTextForRange(range.start, range.end, range.title, range.label);
+  }
+
   if (trimmed === "/event week") {
     const range = getRangeFromPreset("week");
     return getScheduleTextForRange(range.start, range.end, range.title, range.label);
@@ -2633,6 +2696,18 @@ async function tryHandleCommand(input: {
     }
     const range = getRangeFromPreset("dayaftertomorrow");
     return getSummaryTextForRange(range.start, range.end, "สรุปงานมะรืน", range.label);
+  }
+
+  const summaryDayMatch = trimmed.match(/^\/summary day\s*\|\s*(.+)$/i);
+  if (summaryDayMatch) {
+    if (!canRequestSummary(input.user.role)) {
+      return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+    }
+    const range = getRangeForDayExpression(summaryDayMatch[1].trim(), "สรุปงาน");
+    if (!range) {
+      return "⚠️ ระบบยังตีความวันดังกล่าวไม่สำเร็จครับ ลองใช้รูปแบบเช่น อังคารหน้า หรือ 2026-04-14";
+    }
+    return getSummaryTextForRange(range.start, range.end, range.title, range.label);
   }
 
   if (trimmed === "/summary week") {
