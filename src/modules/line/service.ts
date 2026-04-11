@@ -2565,6 +2565,192 @@ async function getSummaryTextForRange(start: Date, end: Date, title: string, lab
   ].join("\n");
 }
 
+function containsAiSummaryKeyword(text: string): boolean {
+  return /(สรุปงาน|รายงาน|สรุปตาราง|สรุป.*งาน)/i.test(normalizeCommonThaiTypos(text));
+}
+
+function getAiSummaryRangeFromPrompt(prompt: string): DateRangePreset | null {
+  const trimmed = normalizeCommonThaiTypos(prompt.trim());
+
+  if (!containsAiSummaryKeyword(trimmed)) {
+    return null;
+  }
+
+  const summaryRangeMatch = trimmed.match(/^.*สรุปงานช่วง\s+(.+?)\s+ถึง\s+(.+)$/i);
+  if (summaryRangeMatch) {
+    const start = parseDateInput(summaryRangeMatch[1].trim(), false);
+    const end = parseDateInput(summaryRangeMatch[2].trim(), true);
+    if (!start || !end) {
+      return null;
+    }
+    return {
+      start,
+      end,
+      label: `${formatThaiDate(start)} - ${formatThaiDate(end)}`,
+      title: "สรุปงานตามช่วงเวลา"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "วันนี้")) {
+    return {
+      ...getRangeFromPreset("today"),
+      title: "สรุปงานวันนี้"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "เมื่อวาน")) {
+    return getRangeForDayExpression("เมื่อวาน", "สรุปงาน");
+  }
+
+  if (matchesSummaryIntent(trimmed, "พรุ่งนี้")) {
+    return {
+      ...getRangeFromPreset("tomorrow"),
+      title: "สรุปงานพรุ่งนี้"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "มะรืน")) {
+    return {
+      ...getRangeFromPreset("dayaftertomorrow"),
+      title: "สรุปงานมะรืน"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "สัปดาห์นี้")) {
+    return {
+      ...getRangeFromPreset("week"),
+      title: "สรุปงานสัปดาห์นี้"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "สัปดาห์หน้า")) {
+    return {
+      ...getRangeFromPreset("nextweek"),
+      title: "สรุปงานสัปดาห์หน้า"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "เดือนนี้")) {
+    return {
+      ...getRangeFromPreset("month"),
+      title: "สรุปงานเดือนนี้"
+    };
+  }
+
+  if (matchesSummaryIntent(trimmed, "เดือนหน้า")) {
+    return {
+      ...getRangeFromPreset("nextmonth"),
+      title: "สรุปงานเดือนหน้า"
+    };
+  }
+
+  const dayExpressionMatch = trimmed.match(
+    /((?:เมื่อวาน|วันนี้|พรุ่งนี้|มะรืน|(?:วัน)?(?:จันทร์|อังคาร|พุธ|พฤหัส|พฤหัสบดี|ศุกร์|เสาร์|อาทิตย์)(?:นี้|หน้า)?))/i
+  );
+  if (dayExpressionMatch?.[1]) {
+    return getRangeForDayExpression(dayExpressionMatch[1].trim(), "สรุปงาน");
+  }
+
+  return null;
+}
+
+function buildRetrievedScheduleSummaryContext(input: {
+  user: {
+    role: string;
+    nickname?: string | null;
+    line_display_name?: string | null;
+  };
+  range: DateRangePreset;
+  events: CalendarEventRow[];
+  aiContextConfig: {
+    botInstruction?: string | null;
+    persona?: RolePersonaRow | null;
+  };
+}) {
+  const total = input.events.length;
+  const internalCount = input.events.filter((event) => event.location_type === "INTERNAL").length;
+  const majorCount = input.events.filter((event) => event.location_type === "MAJOR_UNIT").length;
+  const outsideCount = input.events.filter((event) => event.location_type === "OUTSIDE").length;
+
+  const verifiedPayload = {
+    source: "calendar_events",
+    title: input.range.title,
+    label: input.range.label,
+    total,
+    counts: {
+      internal: internalCount,
+      majorUnit: majorCount,
+      outside: outsideCount
+    },
+    events: input.events.map((event) => ({
+      title: event.title,
+      startAt: event.start_at,
+      endAt: event.end_at,
+      locationType: event.location_type ?? "INTERNAL",
+      locationDisplayName: event.location_display_name ?? null,
+      description: event.description ?? null,
+      note: event.note ?? null,
+      dressCode: event.dress_code ?? null,
+      taskDetails: event.task_details ?? null
+    }))
+  };
+
+  return [
+    buildRoleContext(input.user, input.aiContextConfig),
+    "You are in explicit AI mode.",
+    "Use only the verified schedule data below.",
+    "Do not invent events, times, locations, or totals.",
+    "If there are no events, say clearly that no verified schedule items were found for that period.",
+    "If the user asks for an executive-style answer, keep it concise and decision-oriented.",
+    `Verified schedule data: ${JSON.stringify(verifiedPayload)}`
+  ].join("\n");
+}
+
+async function tryHandleRetrievedAiPrompt(input: {
+  prompt: string;
+  user: {
+    id: string | null;
+    role: string;
+    nickname?: string | null;
+    line_display_name?: string | null;
+  };
+  lineUserId: string;
+}): Promise<string | null> {
+  const summaryRange = getAiSummaryRangeFromPrompt(input.prompt);
+  if (!summaryRange) {
+    return null;
+  }
+
+  if (!canRequestSummary(input.user.role)) {
+    return "⚠️ บทบาทของคุณยังไม่มีสิทธิ์ดูสรุปงานครับ";
+  }
+
+  const [events, aiContextConfig] = await Promise.all([
+    getEventsBetween(summaryRange.start, summaryRange.end),
+    getAIContextConfig(input.user.role)
+  ]);
+
+  const result = await requestGatewayChat({
+    prompt: input.prompt,
+    policy: config.KOYEB0_DEFAULT_POLICY,
+    context: buildRetrievedScheduleSummaryContext({
+      user: input.user,
+      range: summaryRange,
+      events,
+      aiContextConfig
+    }),
+    metadata: {
+      source: "line_ai_retrieved_schedule_summary",
+      lineUserId: input.lineUserId,
+      role: input.user.role,
+      rangeLabel: summaryRange.label,
+      eventCount: events.length
+    }
+  });
+
+  return result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลได้";
+}
+
 async function createScheduleCard(lineUserId: string, requestedByUserId: string | null) {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -3061,6 +3247,27 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
       return;
     }
 
+    const retrievedAiResult = await tryHandleRetrievedAiPrompt({
+      prompt,
+      user: {
+        id: user.id,
+        role: user.role,
+        nickname: user.nickname ?? null,
+        line_display_name: user.line_display_name ?? null
+      },
+      lineUserId
+    });
+
+    if (retrievedAiResult) {
+      await logConversation(lineUserId, user.id, text, retrievedAiResult);
+      await replyText(event.replyToken, retrievedAiResult, {
+        title: "AI Mode",
+        accentColor: "#7c3aed",
+        quickReplyExit: true
+      });
+      return;
+    }
+
     if (shouldRouteAiPromptToQuickAction(prompt)) {
       const quickActionResult = await tryHandleCommand({
         text: prompt,
@@ -3115,6 +3322,27 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
       await replyText(event.replyToken, message, {
         title: "AI Mode",
         accentColor: "#b45309"
+      });
+      return;
+    }
+
+    const retrievedAiResult = await tryHandleRetrievedAiPrompt({
+      prompt: trimmed,
+      user: {
+        id: user.id,
+        role: user.role,
+        nickname: user.nickname ?? null,
+        line_display_name: user.line_display_name ?? null
+      },
+      lineUserId
+    });
+
+    if (retrievedAiResult) {
+      await logConversation(lineUserId, user.id, text, retrievedAiResult);
+      await replyText(event.replyToken, retrievedAiResult, {
+        title: "AI Mode",
+        accentColor: "#7c3aed",
+        quickReplyExit: true
       });
       return;
     }
