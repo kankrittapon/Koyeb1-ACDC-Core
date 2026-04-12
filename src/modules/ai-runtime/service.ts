@@ -27,9 +27,10 @@ export async function probeOpenClawRuntime(): Promise<OpenClawProbeStatus> {
   const gatewayConfig = resolveOpenClawGatewayConfig({
     OPENCLAW_GATEWAY_URL: config.OPENCLAW_GATEWAY_URL,
     OPENCLAW_GATEWAY_TOKEN: config.OPENCLAW_GATEWAY_TOKEN,
-    OPENCLAW_CLIENT_ID: "koyeb1-acdc-core",
+    OPENCLAW_CLIENT_DISPLAY_NAME: "Koyeb1 ACDC Core",
     OPENCLAW_CLIENT_VERSION: "0.1.0",
     OPENCLAW_CLIENT_PLATFORM: "node",
+    OPENCLAW_DEVICE_FAMILY: "server",
     OPENCLAW_GATEWAY_SCOPES: "operator.read,operator.write"
   });
 
