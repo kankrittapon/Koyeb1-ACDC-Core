@@ -9,7 +9,7 @@ import {
 import { NextFunction, Request, Response } from "express";
 import { config } from "../../config";
 import { supabaseAdmin } from "../../lib/supabase";
-import { requestOpenClawChatReply } from "../ai-runtime/service";
+import { requestGatewayChat } from "../ai-gateway/client";
 import { deleteFileFromDrive, uploadFileToDrive } from "../drive/service";
 import {
   canManageCalendar,
@@ -3276,22 +3276,25 @@ async function tryHandleRetrievedAiPrompt(input: {
     getAIContextConfig(input.user.role)
   ]);
 
-  try {
-    const result = await requestOpenClawChatReply({
-      sessionKey: `line-ai:${input.lineUserId}`,
-      prompt: input.prompt,
-      context: buildRetrievedScheduleSummaryContext({
-        user: input.user,
-        range: summaryRange,
-        events,
-        aiContextConfig
-      })
-    });
+  const result = await requestGatewayChat({
+    prompt: input.prompt,
+    policy: config.KOYEB0_DEFAULT_POLICY,
+    context: buildRetrievedScheduleSummaryContext({
+      user: input.user,
+      range: summaryRange,
+      events,
+      aiContextConfig
+    }),
+    metadata: {
+      source: "line_ai_retrieved_schedule_summary",
+      lineUserId: input.lineUserId,
+      role: input.user.role,
+      rangeLabel: summaryRange.label,
+      eventCount: events.length
+    }
+  });
 
-    return result || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลได้";
-  } catch {
-    return "⚠️ AI runtime ตอนนี้ยังไม่พร้อม กรุณาลองใหม่อีกครั้ง หรือใช้ Quick Action แทนครับ";
-  }
+  return result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลได้";
 }
 
 function buildRetrievedFileContext(input: {
@@ -3459,21 +3462,23 @@ async function tryHandleRetrievedFileAiPrompt(input: {
     return deterministicAnswer;
   }
 
-  try {
-    const result = await requestOpenClawChatReply({
-      sessionKey: `line-ai:${input.lineUserId}`,
-      prompt: input.prompt,
-      context: buildRetrievedFileContext({
-        user: input.user,
-        files,
-        aiContextConfig
-      })
-    });
+  const result = await requestGatewayChat({
+    prompt: input.prompt,
+    policy: config.KOYEB0_DEFAULT_POLICY,
+    context: buildRetrievedFileContext({
+      user: input.user,
+      files,
+      aiContextConfig
+    }),
+    metadata: {
+      source: "line_ai_retrieved_file_summary",
+      lineUserId: input.lineUserId,
+      role: input.user.role,
+      fileCount: files.length
+    }
+  });
 
-    return result || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลไฟล์ได้";
-  } catch {
-    return "⚠️ AI runtime ตอนนี้ยังไม่พร้อม กรุณาลองใหม่อีกครั้ง หรือใช้ Quick Action แทนครับ";
-  }
+  return result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถสรุปข้อมูลไฟล์ได้";
 }
 
 async function createScheduleCard(lineUserId: string, requestedByUserId: string | null) {
@@ -4192,11 +4197,17 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
     }
 
     const aiContextConfig = await getAIContextConfig(user.role);
-    const answer = await requestOpenClawChatReply({
-      sessionKey: `line-ai:${lineUserId}`,
+    const result = await requestGatewayChat({
       prompt,
-      context: `${buildRoleContext(user, aiContextConfig)}\nYou are in explicit AI mode. Answer helpfully in Thai and keep the response aligned with the caller's role policy.`
-    }).catch(() => "⚠️ AI runtime ตอนนี้ยังไม่พร้อม กรุณาลองใหม่อีกครั้ง หรือใช้ Quick Action แทนครับ");
+      policy: config.KOYEB0_DEFAULT_POLICY,
+      context: `${buildRoleContext(user, aiContextConfig)}\nYou are in explicit AI mode. Answer helpfully in Thai and keep the response aligned with the caller's role policy.`,
+      metadata: {
+        source: "line_ai_mode",
+        lineUserId,
+        role: user.role
+      }
+    });
+    const answer = result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถตอบได้";
     await logConversation(lineUserId, user.id, text, answer);
     await replyText(event.replyToken, answer, {
       title: "AI Mode",
@@ -4286,11 +4297,17 @@ async function handleTextMessage(event: WebhookEvent & { type: "message"; messag
 
     refreshAIMode(lineUserId);
     const aiContextConfig = await getAIContextConfig(user.role);
-    const answer = await requestOpenClawChatReply({
-      sessionKey: `line-ai:${lineUserId}`,
+    const result = await requestGatewayChat({
       prompt: trimmed,
-      context: `${buildRoleContext(user, aiContextConfig)}\nYou are in explicit AI mode. Answer helpfully in Thai and keep the response aligned with the caller's role policy.`
-    }).catch(() => "⚠️ AI runtime ตอนนี้ยังไม่พร้อม กรุณาลองใหม่อีกครั้ง หรือใช้ Quick Action แทนครับ");
+      policy: config.KOYEB0_DEFAULT_POLICY,
+      context: `${buildRoleContext(user, aiContextConfig)}\nYou are in explicit AI mode. Answer helpfully in Thai and keep the response aligned with the caller's role policy.`,
+      metadata: {
+        source: "line_ai_mode",
+        lineUserId,
+        role: user.role
+      }
+    });
+    const answer = result.text || "ขออภัยครับ ตอนนี้ยังไม่สามารถตอบได้";
     await logConversation(lineUserId, user.id, text, answer);
     await replyText(event.replyToken, answer, {
       title: "AI Mode",

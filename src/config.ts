@@ -37,8 +37,6 @@ const configSchema = z.object({
   KOYEB0_BASE_URL: z.string().url(),
   KOYEB0_INTERNAL_API_KEY: z.string().min(1),
   KOYEB0_DEFAULT_POLICY: z.string().default("private_first"),
-  OPENCLAW_GATEWAY_URL: z.string().optional(),
-  OPENCLAW_GATEWAY_TOKEN: z.string().optional(),
   CORS_ALLOW_ORIGINS: z.string().optional().default("*"),
   PUBLIC_BASE_URL: optionalUrl,
   NEXTJS_FRONTEND_URL: optionalUrl,

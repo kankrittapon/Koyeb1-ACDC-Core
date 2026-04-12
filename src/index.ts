@@ -9,7 +9,6 @@ import { calendarRouter } from "./modules/calendar/routes";
 import { promptsRouter } from "./modules/prompts/routes";
 import { logsRouter } from "./modules/logs/routes";
 import { lineRouter } from "./modules/line/routes";
-import { aiRuntimeRouter } from "./modules/ai-runtime/routes";
 import { initScheduler } from "./modules/scheduler/service";
 import { schedulerRouter } from "./modules/scheduler/routes";
 import { getRequestId } from "./lib/http";
@@ -136,8 +135,7 @@ app.get("/api/modules", (_req, res) => {
       "prompts",
       "logs",
       "scheduler",
-      "ai-gateway",
-      "ai-runtime"
+      "ai-gateway"
     ],
     note: "Scaffold created. Implementation wiring is the next phase."
   });
@@ -157,7 +155,6 @@ app.use(
 );
 app.use("/api/prompts", requireAccess, requireRole(["DEV", "ADMIN"]), promptsRouter);
 app.use("/api/logs", requireAccess, requireRole(["DEV", "ADMIN"]), logsRouter);
-app.use("/api/ai-runtime", requireAccess, requireRole(["DEV", "ADMIN"]), aiRuntimeRouter);
 app.use(
   "/api/jobs",
   requireAccess,
