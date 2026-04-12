@@ -11,3 +11,10 @@ services:
       - "${KOYEB1_UPLOADS_HOST_PATH:-./storage/uploads}:${FILE_STORAGE_ROOT:-/app/storage/uploads}"
     ports:
       - "${TAILSCALE_BIND_IP}:${KOYEB1_HOST_PORT}:8001"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
+          gateway: 172.19.0.1
